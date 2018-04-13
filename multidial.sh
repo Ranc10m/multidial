@@ -35,8 +35,8 @@ build_isatap_tunnel() {
     local isatap_ifname=isa-"$ifname"
     ping -c2 -W 2 "$REMOTE_ROUTER" | grep ttl >/dev/null || return 1
     local ipv4=''
-    ipv4=$(get_ip "$ifname")
-    [ -z "$ipv4" ] && return
+    ipv4=$(get_ip "$ifname" --ipv4)
+    [ -z "$ipv4" ] && return 1
     ip tunnel add "$isatap_ifname" mode sit remote "$REMOTE_ROUTER" local "$ipv4"
     ip link set dev "$isatap_ifname" up
     ip -6 addr add "$IPV6_PREFIX":"$ipv4"/64 dev "$isatap_ifname"
@@ -104,7 +104,7 @@ pppoe_dial() {
         enable_ipv6=1
     fi
     if [ -z "$ifname" ]; then
-        $ECHO "$ME: You must specify a interface"
+        $ECHO "$ME: You must specify a interface" >&2
         exit 1
     fi
     if [[ -f /var/run/$linkname.pid || -f /etc/ppp/$linkname.pid ]]; then
@@ -147,35 +147,58 @@ pppoe_dial() {
 }
 
 dhcp_dial() {
-    $ECHO hello
+    local ifname=$1
+    local enable_ipv6=0
+    if [ "$2" = "--ipv6" ]; then
+        enable_ipv6=1
+    fi
+    if [ -z "$ifname" ]; then
+        $ECHO "$ME: You must specify a interface"
+        exit 1
+    fi
+    if [ -n "$(get_ip "$ifname" --ipv4)" ]; then
+        $ECHO "$ME: There already seems to be a connection up $linkname" >&2
+        exit 1
+    fi
+    ip link show "$ifname" >/dev/null 2>&1 || create_virtual_interface "$ifname"
+    ip link set "$ifname" up
+    dhclient "$ifname" &
+    local TIME=0
+    printf "%s" "Trying to create connection for $ifname "
+    while true; do
+        local ipv4=''
+        ipv4=$(get_ip "$ifname" --ipv4)
+        if [ -n "$ipv4" ]; then
+            [ "$enable_ipv6" = "1" ] && build_isatap_tunnel "$ppp_ifname"
+            $ECHO " Connected!"
+            exit 0
+        fi
+        printf .
+        sleep $CONNECT_POLL
+        TIME=$((TIME + CONNECT_POLL))
+        if [ $TIME -gt $CONNECT_TIMEOUT ]; then
+            break
+        fi
+    done
+    dial_clean_all "$ifname"
+    $ECHO " Failed!" >&2
+    exit 1
 }
 
 static_dial() {
-    $ECHO hello
-}
-
-dial_up() {
-    $ECHO hello
-}
-
-dial_down() {
-    $ECHO hello
-}
-
-dial_status() {
-    $ECHO hello
+    local ifname=$1
 }
 
 case "$1" in
 -i)
     ifname=$2
-    pppoe_dial "$ifname" --ipv6
+    dhcp_dial "$ifname" --ipv6
     ;;
 -r)
     ifname=$2
     dial_clean_all "$ifname"
     ;;
 *)
-    $ECHO "Usage: $ME {-u|-d} [IFNAME]"
+    $ECHO "Usage: $ME {-i|-r} [IFNAME]"
     ;;
 esac
