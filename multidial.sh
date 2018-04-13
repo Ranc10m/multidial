@@ -4,14 +4,16 @@
 ECHO=$(which echo)
 
 # Defaults
-VTH='vth'
-ETH='eth0'
-USER='scu@edu'
-PASSWORD=''
+VTH="vth"
+ETH="eth0"
+USER="scu@edu"
+PASSWORD=""
 CONNECT_POLL=1
 CONNECT_TIMEOUT=10
 IPV6_PREFIX="2001:250:2003:2010:200:5efe"
 REMOTE_ROUTER="202.115.39.98"
+START_ADDRESS="121.48.228.10"
+NETMASK=24
 
 ME=$(basename "$0")
 # Must be root
@@ -234,13 +236,17 @@ get_next_vth_id() {
     $ECHO "$cur"
 }
 
+get_next_address() {
+    $ECHO "$START_ADDRESS"
+}
+
 bulk_dial() {
     local optname
     local vth_id
-    local pppoe_num
-    local dhcp_num
-    local static_num
-    while getopts ":p:d:s" optname; do
+    local pppoe_num=0
+    local dhcp_num=0
+    local static_num=0
+    while getopts ":p:d:s:" optname; do
         case "$optname" in
         "p")
             pppoe_num=$OPTARG
@@ -252,46 +258,56 @@ bulk_dial() {
             static_num=$OPTARG
             ;;
         "?")
-            echo "Unknown option $OPTARG"
+            $ECHO "Unknown option $OPTARG" >&2
             exit 1
             ;;
         ":")
-            echo "No argument value for option $OPTARG"
+            $ECHO "No argument value for option $OPTARG" >&2
             exit 1
             ;;
         "*")
             # Should not occur
-            echo "Unknown error while processing options"
+            $ECHO "Unknown error while processing options" >&2
             exit 1
             ;;
         esac
     done
-
+    #pppoe dial
     while [ "$pppoe_num" -gt 0 ]; do
         vth_id=$(get_next_vth_id)
-        pppoe_dial "$vth_id"
+        pppoe_dial "$VTH""$vth_id"
         pppoe_num=$((pppoe_num - 1))
     done
-
+    # dhcp dial
     while [ "$dhcp_num" -gt 0 ]; do
         vth_id=$(get_next_vth_id)
-        pppoe_dial "$vth_id"
+        pppoe_dial "$VTH""$vth_id"
         dhcp_num=$((dhcp_num - 1))
     done
+    # static dial
+    while [ "$static_num" -gt 0 ]; do
+        vth_id=$(get_next_vth_id)
+        ipv4=$(get_next_address)
+        netmask="$NETMASK"
+        static_dial "$VTH""$vth_id" "$ipv4" "$netmask"
+        static_num=$((static_num - 1))
+    done
+}
 
-    echo "$static_num"
+bulk_dial_clean() {
+    echo
 }
 
 case "$1" in
 -i)
     ifname=$2
-    bulk_dial -p 10
+    pppoe_dial "$ifname"
     ;;
 -r)
     ifname=$2
     dial_clean_all "$ifname"
     ;;
 *)
-    $ECHO "Usage: $ME {-i|-r} [IFNAME]"
+    bulk_dial "$@"
     ;;
 esac
