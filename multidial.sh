@@ -29,7 +29,7 @@ get_ip() {
     [ "$2" = "--ipv6" ] && family='-6'
     local addresses=''
     addresses=$(ip "$family" addr show "$ifname" 2>/dev/null |
-        grep -o -E 'inet6? *[^ /]*' | awk '{print $2}' | tr '\n' ' ' | sed 's/ $/\n/')
+        grep -o -E 'inet6?.*scope global' | sed 's/^inet6\{0,1\} *\([^ /]*\).*$/\1/')
     $ECHO "$addresses"
 }
 
