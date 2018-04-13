@@ -168,7 +168,7 @@ dhcp_dial() {
         local ipv4=''
         ipv4=$(get_ip "$ifname" --ipv4)
         if [ -n "$ipv4" ]; then
-            [ "$enable_ipv6" = "1" ] && build_isatap_tunnel "$ppp_ifname"
+            [ "$enable_ipv6" = "1" ] && build_isatap_tunnel "$ifname"
             $ECHO " Connected!"
             exit 0
         fi
@@ -203,15 +203,19 @@ static_dial() {
     printf "%s" "Trying to create connection for $ifname "
     ip link show "$ifname" >/dev/null 2>&1 || create_virtual_interface "$ifname"
     ip link set "$ifname" up
-    ip addr add "$ipv4"/"$netmask" dev "$ifname"
-    [ "$enable_ipv6" = "1" ] && build_isatap_tunnel "$ppp_ifname"
-    $ECHO ". Connected!"
+    if ip addr add "$ipv4"/"$netmask" dev "$ifname" >/dev/null 2>&1; then
+        [ "$enable_ipv6" = "1" ] && build_isatap_tunnel "$ifname"
+        $ECHO ". Connected!"
+    fi
+    remove_virtual_interface "$ifname"
+    $ECHO " Failed!" >&2
+    exit 1
 }
 
 case "$1" in
 -i)
     ifname=$2
-    pppoe_dial "$ifname" --ipv6
+    static_dial "$ifname" "$3" "$4" --ipv6
     ;;
 -r)
     ifname=$2
