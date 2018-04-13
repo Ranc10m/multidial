@@ -24,7 +24,7 @@ get_ip() {
     local family=''
     [ "$2" = "--ipv4" ] && family='-4'
     [ "$2" = "--ipv6" ] && family='-6'
-    local addresses
+    local addresses=''
     addresses=$(ip $family addr show "$ifname" 2>/dev/null |
         grep -o -E 'inet6? *[^ /]*' | awk '{print $2}')
     $ECHO "$addresses"
@@ -33,13 +33,22 @@ get_ip() {
 build_isatap_tunnel() {
     local ifname=$1
     local isatap_ifname=isa-"$ifname"
-    ping -c2 -W 2 "$REMOTE_ROUTER" | grep ttl >/dev/null || return
-    local ipv4
+    ping -c2 -W 2 "$REMOTE_ROUTER" | grep ttl >/dev/null || return 1
+    local ipv4=''
     ipv4=$(get_ip "$ifname")
     [ -z "$ipv4" ] && return
     ip tunnel add "$isatap_ifname" mode sit remote "$REMOTE_ROUTER" local "$ipv4"
     ip link set dev "$isatap_ifname" up
     ip -6 addr add "$IPV6_PREFIX":"$ipv4"/64 dev "$isatap_ifname"
+}
+
+destroy_isatap_tunnel() {
+    local ifname=$1
+    local isatap_ifname=isa-"$ifname"
+    if ip link show | grep "$isatap_ifname" >/dev/null; then
+        ip link set "$isatap_ifname" down
+        ip tunnel del "$isatap_ifname"
+    fi
 }
 
 get_pppoe_ifname() {
@@ -51,27 +60,40 @@ get_pppoe_ifname() {
     $ECHO "$ppp_ifname"
 }
 
-dial_clean() {
+pppoe_stop() {
     local ifname=$1
-    # May be a ppp interface. If so, delete it
     local linkname=ppp-$ifname
+    local ppp_ifname=''
     local pppd_id=''
+    ppp_ifname=$(get_pppoe_ifname "$ifname")
+    [ -n "$ppp_ifname" ] && destroy_isatap_tunnel "$ppp_ifname"
     [ -f /var/run/"$linkname".pid ] && pppd_id=$(sed -n '1p' </var/run/"$linkname".pid)
     [ -f /etc/ppp/"$linkname".pid ] && pppd_id=$(sed -n '1p' </etc/ppp/"$linkname".pid)
     [ -n "$pppd_id" ] && kill "$pppd_id" >/dev/null 2>&1
-    # Check if it has a isatap tunnel. If so, delete it
-    local isatap_ifname=isa-"$ifname"
-    if ip link show | grep "$isatap_ifname"; then
-        ip link set "$isatap_ifname" down
-        ip tunnel del "$isatap_ifname"
+}
+
+create_virtual_interface() {
+    local ifname=$1
+    if ! ip link add link $ETH name "$ifname" type macvlan >/dev/null 2>&1; then
+        $ECHO "Cannot create virtual interface $ifname" >&2
+        exit 1
     fi
-    # Check if the interface exist
+}
+
+remove_virtual_interface() {
+    local ifname=$1
     ip link show "$ifname" >/dev/null 2>&1 || return
-    # Check if the interface is a virtual interface. If so, delete it
     if ip link show "$ifname" | grep "$ifname"@$ETH >/dev/null; then
         ip link set "$ifname" down
         ip link del "$ifname"
     fi
+}
+
+dial_clean_all() {
+    local ifname=$1
+    pppoe_stop "$ifname"
+    destroy_isatap_tunnel "$ifname"
+    remove_virtual_interface "$ifname"
 }
 
 pppoe_dial() {
@@ -90,16 +112,11 @@ pppoe_dial() {
         exit 1
     fi
     # interface has not exist yet
-    if ! ip link show "$ifname" >/dev/null 2>&1; then
-        if ! ip link add link $ETH name "$ifname" type macvlan >/dev/null 2>&1; then
-            $ECHO "Cannot create virtual interface $ifname" >&2
-            exit 1
-        fi
-    fi
+    ip link show "$ifname" >/dev/null 2>&1 || create_virtual_interface "$ifname"
     ip link set "$ifname" up
     if ! pppd plugin rp-pppoe.so "$ifname" linkname "$ifname" \
         persist hide-password noauth user "$USER" password "$PASSWORD" >/dev/null 2>&1; then
-        ip link del "$ifname"
+        remove_virtual_interface "$ifname"
         $ECHO "Cannot create connection for $ifname" >&2
         exit 1
     fi
@@ -109,26 +126,22 @@ pppoe_dial() {
         local ppp_ifname
         ppp_ifname=$(get_pppoe_ifname "$ifname")
         if [ -n "$ppp_ifname" ]; then
-            local ipv4
+            local ipv4=''
             ipv4=$(get_ip "$ppp_ifname" --ipv4)
             if [ -n "$ipv4" ]; then
+                [ "$enable_ipv6" = "1" ] && build_isatap_tunnel "$ppp_ifname"
                 $ECHO " Connected!"
-                if [ "$enable_ipv6" = "1" ]; then
-                    build_isatap_tunnel "$ppp_ifname"
-                    echo trying to build ipv6 isatap tunnel
-                fi
                 exit 0
             fi
         fi
         printf .
         sleep $CONNECT_POLL
-        local TIME
         TIME=$((TIME + CONNECT_POLL))
         if [ $TIME -gt $CONNECT_TIMEOUT ]; then
             break
         fi
     done
-    dial_clean "$ifname"
+    dial_clean_all "$ifname"
     $ECHO " Failed!" >&2
     exit 1
 }
@@ -160,7 +173,7 @@ case "$1" in
     ;;
 -r)
     ifname=$2
-    dial_clean "$ifname"
+    dial_clean_all "$ifname"
     ;;
 *)
     $ECHO "Usage: $ME {-u|-d} [IFNAME]"
