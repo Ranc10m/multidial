@@ -4,6 +4,7 @@
 ECHO=$(which echo)
 
 # Defaults
+VTH='vth'
 ETH='eth0'
 USER='scu@edu'
 PASSWORD=''
@@ -99,7 +100,8 @@ pppoe_dial() {
     local ifname=$1
     local linkname=ppp-$ifname
     local enable_ipv6=0
-    if [ "$2" = "--ipv6" ]; then
+    local ppp_ifname
+    if [ "$2" = "-ipv6" ]; then
         enable_ipv6=1
     fi
     if [ -z "$ifname" ]; then
@@ -107,7 +109,8 @@ pppoe_dial() {
         exit 1
     fi
     if [[ -f /var/run/$linkname.pid || -f /etc/ppp/$linkname.pid ]]; then
-        $ECHO "$ME: There already seems to be a PPPoE connection up $linkname" >&2
+        ppp_ifname=get_pppoe_ifname "$ifname"
+        $ECHO "$ME: There already seems to be a PPPoE connection up $linkname($ppp_ifname)" >&2
         exit 1
     fi
     # interface has not exist yet
@@ -120,17 +123,18 @@ pppoe_dial() {
         exit 1
     fi
     local TIME=0
-    printf "%s" "Trying to create connection for $ifname "
+    printf "Trying to create connection for %s " "$ifname"
     while true; do
-        local ppp_ifname
         ppp_ifname=$(get_pppoe_ifname "$ifname")
         if [ -n "$ppp_ifname" ]; then
             local ipv4=''
+            local ipv6=''
             ipv4=$(get_ip "$ppp_ifname" --ipv4)
             if [ -n "$ipv4" ]; then
                 [ "$enable_ipv6" = "1" ] && build_isatap_tunnel "$ppp_ifname"
-                $ECHO " Connected!"
-                exit 0
+                ipv6=$(get_ip "$ppp_ifname" --ipv6)
+                printf " Connected! ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
+                return 0
             fi
         fi
         printf .
@@ -163,14 +167,16 @@ dhcp_dial() {
     ip link set "$ifname" up
     dhclient -nw "$ifname"
     local TIME=0
-    printf "%s" "Trying to create connection for $ifname "
+    printf "Trying to create connection for %s " "$ifname"
     while true; do
         local ipv4=''
+        local ipv6=''
         ipv4=$(get_ip "$ifname" --ipv4)
         if [ -n "$ipv4" ]; then
             [ "$enable_ipv6" = "1" ] && build_isatap_tunnel "$ifname"
-            $ECHO " Connected!"
-            exit 0
+            ipv6=$(get_ip "$ppp_ifname" --ipv6)
+            printf " Connected! ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
+            return 0
         fi
         printf .
         sleep $CONNECT_POLL
@@ -200,22 +206,86 @@ static_dial() {
         $ECHO "$ME: There already seems to be a connection up $linkname" >&2
         exit 1
     fi
-    printf "%s" "Trying to create connection for $ifname "
+    printf "Trying to create connection for %s " "$ifname"
     ip link show "$ifname" >/dev/null 2>&1 || create_virtual_interface "$ifname"
     ip link set "$ifname" up
     if ip addr add "$ipv4"/"$netmask" dev "$ifname" >/dev/null 2>&1; then
         [ "$enable_ipv6" = "1" ] && build_isatap_tunnel "$ifname"
-        $ECHO ". Connected!"
+        ipv6=$(get_ip "$ppp_ifname" --ipv6)
+        printf " Connected! ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
+        return 0
     fi
     remove_virtual_interface "$ifname"
     $ECHO " Failed!" >&2
     exit 1
 }
 
+#ifname ip gateway
+configure_routing_table() {
+    echo
+}
+
+get_next_vth_id() {
+    local cur=1
+    while true; do
+        ip link show "$VTH""$cur" >/dev/null 2>&1 || break
+        cur=$((cur + 1))
+    done
+    $ECHO "$cur"
+}
+
+bulk_dial() {
+    local optname
+    local vth_id
+    local pppoe_num
+    local dhcp_num
+    local static_num
+    while getopts ":p:d:s" optname; do
+        case "$optname" in
+        "p")
+            pppoe_num=$OPTARG
+            ;;
+        "d")
+            dhcp_num=$OPTARG
+            ;;
+        "s")
+            static_num=$OPTARG
+            ;;
+        "?")
+            echo "Unknown option $OPTARG"
+            exit 1
+            ;;
+        ":")
+            echo "No argument value for option $OPTARG"
+            exit 1
+            ;;
+        "*")
+            # Should not occur
+            echo "Unknown error while processing options"
+            exit 1
+            ;;
+        esac
+    done
+
+    while [ "$pppoe_num" -gt 0 ]; do
+        vth_id=$(get_next_vth_id)
+        pppoe_dial "$vth_id"
+        pppoe_num=$((pppoe_num - 1))
+    done
+
+    while [ "$dhcp_num" -gt 0 ]; do
+        vth_id=$(get_next_vth_id)
+        pppoe_dial "$vth_id"
+        dhcp_num=$((dhcp_num - 1))
+    done
+
+    echo "$static_num"
+}
+
 case "$1" in
 -i)
     ifname=$2
-    static_dial "$ifname" "$3" "$4" --ipv6
+    bulk_dial -p 10
     ;;
 -r)
     ifname=$2
