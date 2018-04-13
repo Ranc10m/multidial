@@ -230,16 +230,28 @@ configure_routing_table() {
     echo
 }
 
+CUR_VTH_ID=1
+
 get_next_vth_id() {
-    local cur=1
     while true; do
-        ip link show "$VTH""$cur" >/dev/null 2>&1 || break
-        cur=$((cur + 1))
+        ip link show "${VTH}${CUR_VTH_ID}" >/dev/null 2>&1 || break
+        CUR_VTH_ID=$((CUR_VTH_ID + 1))
     done
-    $ECHO "$cur"
+    $ECHO "$CUR_VTH_ID"
 }
 
 get_next_address() {
+    while true; do
+        local a=('' '' '' '')
+        local i=0
+        ip -4 addr show | grep "$START_ADDRESS" >/dev/null || break
+        for n in $(echo "$START_ADDRESS" | tr '.' ' '); do
+            a["$i"]=$n
+            i=$((i + 1))
+        done
+        a[3]=$((a[3] + 1))
+        START_ADDRESS=$($ECHO "${a[@]}" | tr ' ' '.')
+    done
     $ECHO "$START_ADDRESS"
 }
 
@@ -282,13 +294,13 @@ bulk_dial() {
     #pppoe dial
     while [ "$pppoe_num" -gt 0 ]; do
         vth_id=$(get_next_vth_id)
-        pppoe_dial "$VTH""$vth_id" "$enable_ipv6"
+        pppoe_dial "${VTH}${vth_id}" "$enable_ipv6"
         pppoe_num=$((pppoe_num - 1))
     done
     # dhcp dial
     while [ "$dhcp_num" -gt 0 ]; do
         vth_id=$(get_next_vth_id)
-        pppoe_dial "$VTH""$vth_id" "$enable_ipv6"
+        pppoe_dial "${VTH}${vth_id}" "$enable_ipv6"
         dhcp_num=$((dhcp_num - 1))
     done
     # static dial
@@ -296,13 +308,13 @@ bulk_dial() {
         vth_id=$(get_next_vth_id)
         ipv4=$(get_next_address)
         netmask="$NETMASK"
-        static_dial "$VTH""$vth_id" "$ipv4" "$netmask" "$enable_ipv6"
+        static_dial "${VTH}${vth_id}" "$ipv4" "$netmask" "$enable_ipv6"
         static_num=$((static_num - 1))
     done
 }
 
 bulk_dial_clean() {
-    for i in $(ip link show | grep -E -o 'vth[0-9]{1,2}'); do
+    for i in $(ip link show | grep -E -o 'vth[0-9]{1,3}'); do
         dial_clean_all "$i"
     done
 }
