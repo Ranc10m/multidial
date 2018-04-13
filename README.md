@@ -1,0 +1,1 @@
+## Multidial script for Linux
