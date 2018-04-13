@@ -33,7 +33,6 @@ get_ip() {
 build_isatap_tunnel() {
     local ifname=$1
     local isatap_ifname=isa-"$ifname"
-    ping -c2 -W 2 "$REMOTE_ROUTER" | grep ttl >/dev/null || return 1
     local ipv4=''
     ipv4=$(get_ip "$ifname" --ipv4)
     [ -z "$ipv4" ] && return 1
@@ -162,7 +161,7 @@ dhcp_dial() {
     fi
     ip link show "$ifname" >/dev/null 2>&1 || create_virtual_interface "$ifname"
     ip link set "$ifname" up
-    dhclient "$ifname" &
+    dhclient -nw "$ifname"
     local TIME=0
     printf "%s" "Trying to create connection for $ifname "
     while true; do
@@ -187,12 +186,32 @@ dhcp_dial() {
 
 static_dial() {
     local ifname=$1
+    local ipv4=$2
+    local netmask=$3
+    local enable_ipv6=0
+    if [ "$4" = "--ipv6" ]; then
+        enable_ipv6=1
+    fi
+    if [ -z "$ifname" ]; then
+        $ECHO "$ME: You must specify a interface"
+        exit 1
+    fi
+    if [ -n "$(get_ip "$ifname" --ipv4)" ]; then
+        $ECHO "$ME: There already seems to be a connection up $linkname" >&2
+        exit 1
+    fi
+    printf "%s" "Trying to create connection for $ifname "
+    ip link show "$ifname" >/dev/null 2>&1 || create_virtual_interface "$ifname"
+    ip link set "$ifname" up
+    ip addr add "$ipv4"/"$netmask" dev "$ifname"
+    [ "$enable_ipv6" = "1" ] && build_isatap_tunnel "$ppp_ifname"
+    $ECHO ". Connected!"
 }
 
 case "$1" in
 -i)
     ifname=$2
-    dhcp_dial "$ifname" --ipv6
+    pppoe_dial "$ifname" --ipv6
     ;;
 -r)
     ifname=$2
