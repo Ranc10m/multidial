@@ -28,8 +28,8 @@ get_ip() {
     [ "$2" = "--ipv4" ] && family='-4'
     [ "$2" = "--ipv6" ] && family='-6'
     local addresses=''
-    addresses=$(ip $family addr show "$ifname" 2>/dev/null |
-        grep -o -E 'inet6? *[^ /]*' | awk '{print $2}')
+    addresses=$(ip "$family" addr show "$ifname" 2>/dev/null |
+        grep -o -E 'inet6? *[^ /]*' | awk '{print $2}' | tr '\n' ' ' | sed 's/ $/\n/')
     $ECHO "$addresses"
 }
 
@@ -41,7 +41,7 @@ build_isatap_tunnel() {
     [ -z "$ipv4" ] && return 1
     ip tunnel add "$isatap_ifname" mode sit remote "$REMOTE_ROUTER" local "$ipv4"
     ip link set dev "$isatap_ifname" up
-    ip -6 addr add "$IPV6_PREFIX":"$ipv4"/64 dev "$isatap_ifname"
+    ip -6 addr add "$IPV6_PREFIX:$ipv4"/64 dev "$isatap_ifname"
 }
 
 destroy_isatap_tunnel() {
@@ -57,8 +57,8 @@ get_pppoe_ifname() {
     local ifname=$1
     local linkname=ppp-$ifname
     local ppp_ifname=''
-    [ -f /var/run/"$linkname".pid ] && ppp_ifname=$(sed -n '2p' </var/run/"$linkname".pid)
-    [ -f /etc/ppp/"$linkname".pid ] && ppp_ifname=$(sed -n '2p' </etc/ppp/"$linkname".pid)
+    [ -f "/var/run/$linkname.pid" ] && ppp_ifname=$(sed -n '2p' <"/var/run/$linkname.pid")
+    [ -f "/etc/ppp/$linkname.pid" ] && ppp_ifname=$(sed -n '2p' <"/etc/ppp/$linkname.pid")
     $ECHO "$ppp_ifname"
 }
 
@@ -69,14 +69,14 @@ pppoe_stop() {
     local pppd_id=''
     ppp_ifname=$(get_pppoe_ifname "$ifname")
     [ -n "$ppp_ifname" ] && destroy_isatap_tunnel "$ppp_ifname"
-    [ -f /var/run/"$linkname".pid ] && pppd_id=$(sed -n '1p' </var/run/"$linkname".pid)
-    [ -f /etc/ppp/"$linkname".pid ] && pppd_id=$(sed -n '1p' </etc/ppp/"$linkname".pid)
+    [ -f "/var/run/$linkname.pid" ] && pppd_id=$(sed -n '1p' <"/var/run/$linkname.pid")
+    [ -f "/etc/ppp/$linkname.pid" ] && pppd_id=$(sed -n '1p' <"/etc/ppp/$linkname.pid")
     [ -n "$pppd_id" ] && kill "$pppd_id" >/dev/null 2>&1
 }
 
 create_virtual_interface() {
     local ifname=$1
-    if ! ip link add link $ETH name "$ifname" type macvlan >/dev/null 2>&1; then
+    if ! ip link add link "$ETH" name "$ifname" type macvlan >/dev/null 2>&1; then
         $ECHO "Cannot create virtual interface $ifname" >&2
         exit 1
     fi
@@ -85,7 +85,7 @@ create_virtual_interface() {
 remove_virtual_interface() {
     local ifname=$1
     ip link show "$ifname" >/dev/null 2>&1 || return
-    if ip link show "$ifname" | grep "$ifname"@$ETH >/dev/null; then
+    if ip link show "$ifname" | grep "$ifname@$ETH" >/dev/null; then
         ip link set "$ifname" down
         ip link del "$ifname"
     fi
@@ -103,14 +103,14 @@ pppoe_dial() {
     local linkname=ppp-$ifname
     local enable_ipv6=0
     local ppp_ifname
-    if [ "$2" = "-ipv6" ]; then
+    if [ "$2" = "--ipv6" ]; then
         enable_ipv6=1
     fi
     if [ -z "$ifname" ]; then
         $ECHO "$ME: You must specify a interface" >&2
         exit 1
     fi
-    if [[ -f /var/run/$linkname.pid || -f /etc/ppp/$linkname.pid ]]; then
+    if [[ -f "/var/run/$linkname.pid" || -f "/etc/ppp/$linkname.pid" ]]; then
         ppp_ifname=get_pppoe_ifname "$ifname"
         $ECHO "$ME: There already seems to be a PPPoE connection up $linkname($ppp_ifname)" >&2
         exit 1
@@ -134,8 +134,9 @@ pppoe_dial() {
             ipv4=$(get_ip "$ppp_ifname" --ipv4)
             if [ -n "$ipv4" ]; then
                 [ "$enable_ipv6" = "1" ] && build_isatap_tunnel "$ppp_ifname"
-                ipv6=$(get_ip "$ppp_ifname" --ipv6)
-                printf " Connected! ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
+                ipv6=$(get_ip isa-"$ppp_ifname" --ipv6)
+                $ECHO " Connected!"
+                printf "ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
                 return 0
             fi
         fi
@@ -176,8 +177,9 @@ dhcp_dial() {
         ipv4=$(get_ip "$ifname" --ipv4)
         if [ -n "$ipv4" ]; then
             [ "$enable_ipv6" = "1" ] && build_isatap_tunnel "$ifname"
-            ipv6=$(get_ip "$ppp_ifname" --ipv6)
-            printf " Connected! ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
+            ipv6=$(get_ip isa-"$ifname" --ipv6)
+            $ECHO " Connected!"
+            printf "ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
             return 0
         fi
         printf .
@@ -213,8 +215,9 @@ static_dial() {
     ip link set "$ifname" up
     if ip addr add "$ipv4"/"$netmask" dev "$ifname" >/dev/null 2>&1; then
         [ "$enable_ipv6" = "1" ] && build_isatap_tunnel "$ifname"
-        ipv6=$(get_ip "$ppp_ifname" --ipv6)
-        printf " Connected! ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
+        ipv6=$(get_ip isa-"$ifname" --ipv6)
+        $ECHO " Connected!"
+        printf "ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
         return 0
     fi
     remove_virtual_interface "$ifname"
@@ -246,7 +249,8 @@ bulk_dial() {
     local pppoe_num=0
     local dhcp_num=0
     local static_num=0
-    while getopts ":p:d:s:" optname; do
+    local enable_ipv6=''
+    while getopts ":p:d:s:6" optname; do
         case "$optname" in
         "p")
             pppoe_num=$OPTARG
@@ -256,6 +260,9 @@ bulk_dial() {
             ;;
         "s")
             static_num=$OPTARG
+            ;;
+        "6")
+            enable_ipv6='--ipv6'
             ;;
         "?")
             $ECHO "Unknown option $OPTARG" >&2
@@ -275,13 +282,13 @@ bulk_dial() {
     #pppoe dial
     while [ "$pppoe_num" -gt 0 ]; do
         vth_id=$(get_next_vth_id)
-        pppoe_dial "$VTH""$vth_id"
+        pppoe_dial "$VTH""$vth_id" "$enable_ipv6"
         pppoe_num=$((pppoe_num - 1))
     done
     # dhcp dial
     while [ "$dhcp_num" -gt 0 ]; do
         vth_id=$(get_next_vth_id)
-        pppoe_dial "$VTH""$vth_id"
+        pppoe_dial "$VTH""$vth_id" "$enable_ipv6"
         dhcp_num=$((dhcp_num - 1))
     done
     # static dial
@@ -289,13 +296,15 @@ bulk_dial() {
         vth_id=$(get_next_vth_id)
         ipv4=$(get_next_address)
         netmask="$NETMASK"
-        static_dial "$VTH""$vth_id" "$ipv4" "$netmask"
+        static_dial "$VTH""$vth_id" "$ipv4" "$netmask" "$enable_ipv6"
         static_num=$((static_num - 1))
     done
 }
 
 bulk_dial_clean() {
-    echo
+    for i in $(ip link show | grep -E -o 'vth[0-9]{1,2}'); do
+        dial_clean_all "$i"
+    done
 }
 
 case "$1" in
@@ -306,6 +315,9 @@ case "$1" in
 -r)
     ifname=$2
     dial_clean_all "$ifname"
+    ;;
+-c)
+    bulk_dial_clean
     ;;
 *)
     bulk_dial "$@"
