@@ -1,1 +1,1 @@
-## Multidial script for Linux
+## Shell script to dial multiple internet connection over a single interface
