@@ -24,6 +24,7 @@ PASSWORD=""
 # ISATAP configuration
 REMOTE_ROUTER="202.115.39.98"
 IPV6_PREFIX="2001:250:2003:2010:200:5efe"
+IPV6_GATEWAY="$IPV6_PREFIX:$REMOTE_ROUTER"
 
 # Static IP address
 ADDRESS="121.48.228.10"
@@ -49,7 +50,7 @@ get_ip() {
     [ "$2" = "--ipv4" ] && family='-4'
     [ "$2" = "--ipv6" ] && family='-6'
     local addresses
-    addresses=$(ip "$family" addr show "$ifname" 2>/dev/null |
+    addresses=$(ip $family addr show "$ifname" 2>/dev/null |
         grep -o -E 'inet6?.*scope global' |
         sed 's/^inet6\{0,1\} *\([^ /]*\).*$/\1/')
     echo "$addresses"
@@ -62,7 +63,7 @@ create_virtual_interface() {
     local ifname=$1
     [ -f "$DATA_DIR/$ifname" ] && rm -f "$DATA_DIR/$ifname" 2>/dev/null
     ip link add link "$ETH" name "$ifname" type macvlan >/dev/null 2>&1 || return 1
-    echo >>"$DATA_DIR/$ifname"
+    touch "$DATA_DIR/$ifname"
 }
 
 # Remove virtual interface
@@ -167,7 +168,7 @@ configure_routing_table() {
 # Configure routing table
 # Args: [ifname]
 # e.g. delete_routing_table 1
-delete_routing_table() {
+remove_routing_table() {
     local table_id=$2
 
 }
@@ -177,22 +178,26 @@ delete_routing_table() {
 # e.g. dial_clean_all vth0
 dial_clean_all() {
     local ifname=$1
+    if [ -z "$ifname" ]; then
+        error "You must specify a interface"
+        exit 1
+    fi
+    if ! ip link show "$ifname" >/dev/null 2>&1; then
+        error "Interface \"$ifname\" does not exist"
+        exit 1
+    fi
     pppoe_stop "$ifname"
     destroy_isatap_tunnel "$ifname"
     remove_virtual_interface "$ifname"
 }
 
 # PPPoE dial
-# Args: [ifname] [--ipv6]
-# e.g. pppoe_dial vth0 --ipv6
+# Args: [ifname]
+# e.g. pppoe_dial vth0
 pppoe_dial() {
     local ifname=$1
     local linkname=ppp-$ifname
-    local enable_ipv6=0
     local ppp_ifname
-    if [ "$2" = "--ipv6" ]; then
-        enable_ipv6=1
-    fi
     if ! pppd plugin rp-pppoe.so "$ifname" linkname "$ifname" \
         persist hide-password noauth user "$USER" password "$PASSWORD" >/dev/null 2>&1; then
         dial_clean_all "$ifname"
@@ -203,61 +208,9 @@ pppoe_dial() {
     printf "Trying to create connection for %s " "$ifname"
     while true; do
         ppp_ifname=$(get_pppoe_ifname "$ifname")
-        if [ -n "$ppp_ifname" ]; then
-            local ipv4
-            local ipv6
-            ipv4=$(get_ip "$ppp_ifname" --ipv4)
-            if [ -n "$ipv4" ]; then
-                if [ "$enable_ipv6" = "1" ]; then
-                    if ! build_isatap_tunnel "$ppp_ifname"; then
-                        error "Cannot build isatap tunnel for $ifname"
-                        exit 1
-                    fi
-                fi
-                echo " Connected!"
-                ipv6=$(get_ip isa-"$ppp_ifname" --ipv6)
-                printf "ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
-                return
-            fi
-        fi
-        printf .
-        sleep $CONNECT_POLL
-        TIME=$((TIME + CONNECT_POLL))
-        if [ $TIME -gt $CONNECT_TIMEOUT ]; then
-            break
-        fi
-    done
-    dial_clean_all "$ifname"
-    echo " Failed!"
-    return 1
-}
-
-# DHCP dial
-# Args: [ifname] [--ipv6]
-# e.g. dhcp_dial vth0 --ipv6
-dhcp_dial() {
-    local ifname=$1
-    local enable_ipv6=0
-    if [ "$2" = "--ipv6" ]; then
-        enable_ipv6=1
-    fi
-    dhclient -nw "$ifname"
-    local TIME=0
-    printf "Trying to create connection for %s " "$ifname"
-    while true; do
-        local ipv4
-        local ipv6
-        ipv4=$(get_ip "$ifname" --ipv4)
-        if [ -n "$ipv4" ]; then
-            if [ "$enable_ipv6" = "1" ]; then
-                if ! build_isatap_tunnel "$ifname"; then
-                    error "Cannot build isatap tunnel for $ifname"
-                    exit 1
-                fi
-            fi
+        if [ -n "$ppp_ifname" ] && [ -n "$(get_ip "$ppp_ifname" --ipv4)" ]; then
+            echo "ifname:${ppp_ifname}" >>"$DATA_DIR/$ifname"
             echo " Connected!"
-            ipv6=$(get_ip isa-"$ifname" --ipv6)
-            printf "ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
             return
         fi
         printf .
@@ -269,44 +222,63 @@ dhcp_dial() {
     done
     dial_clean_all "$ifname"
     echo " Failed!"
-    return 1
+    exit 1
+}
+
+# DHCP dial
+# Args: [ifname]
+# e.g. dhcp_dial vth0
+dhcp_dial() {
+    local ifname=$1
+    dhclient -nw "$ifname"
+    local TIME=0
+    printf "Trying to create connection for %s " "$ifname"
+    while true; do
+        if [ -n "$(get_ip "$ifname" --ipv4)" ]; then
+            echo "ifname:${ifname}" >>"$DATA_DIR/$ifname"
+            echo " Connected!"
+            return
+        fi
+        printf .
+        sleep $CONNECT_POLL
+        TIME=$((TIME + CONNECT_POLL))
+        if [ $TIME -gt $CONNECT_TIMEOUT ]; then
+            break
+        fi
+    done
+    dial_clean_all "$ifname"
+    echo " Failed!"
+    exit 1
 }
 
 # Static dial
-# Args: [ifname] [ipv4 address] [netmask] [--ipv6]
-# e.g. static_dial vth0 121.48.228.10 24 --ipv6
+# Args: [ifname] [ipv4 address] [netmask]
+# e.g. static_dial vth0 121.48.228.10 24
 static_dial() {
     local ifname=$1
     local ipv4=$2
     local netmask=$3
-    local enable_ipv6=0
-    if [ "$4" = "--ipv6" ]; then
-        enable_ipv6=1
-    fi
     printf "Trying to create connection for %s ." "$ifname"
     if ip addr add "$ipv4"/"$netmask" dev "$ifname" >/dev/null 2>&1; then
-        if [ "$enable_ipv6" = "1" ]; then
-            if ! build_isatap_tunnel "$ifname"; then
-                error "Cannot build isatap tunnel for $ifname"
-                exit 1
-            fi
-        fi
+        echo "ifname:${ifname}" >>"$DATA_DIR/$ifname"
         echo " Connected!"
-        ipv6=$(get_ip isa-"$ifname" --ipv6)
-        printf "ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
         return 0
     fi
     dial_clean_all "$ifname"
     echo " Failed!"
-    return 1
+    exit 1
 }
 
 # A unified dial function
-# Args: [method] [ifname] ...
+# Args: [method] [ifname] ... [--ipv6]
 # dial_helper pppoe vth0 ...
 dial_helper() {
     local method=$1
     local ifname=$2
+    local enable_ipv6=0
+    if [ "${!#}" = "--ipv6" ]; then
+        enable_ipv6=1
+    fi
     shift 2
     local valid=0
     for m in "${METHODS[@]}"; do
@@ -334,6 +306,20 @@ dial_helper() {
     fi
     ip link set "$ifname" up
     "${method}_dial" "$ifname" "$@"
+    local ifname2
+    local ipv4
+    local ipv6
+    ifname2=$(grep ifname <"$DATA_DIR/$ifname" | cut -d ':' -f 2)
+    if [ "$enable_ipv6" = '1' ]; then
+        if ! build_isatap_tunnel "$ifname2"; then
+            error "Cannot build isatap tunnel for $ifname"
+            dial_clean_all "$ifname"
+            exit 1
+        fi
+    fi
+    ipv4=$(get_ip "$ifname2" --ipv4)
+    ipv6=$(get_ip isa-"$ifname2" --ipv6)
+    printf "ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
 }
 
 # Output next virtual interface id
@@ -408,12 +394,7 @@ bulk_dial() {
     #pppoe dial
     while [ "$pppoe_num" -gt 0 ]; do
         vth_id=$(get_next_vth_id)
-        if pppoe_dial "${VTH}${vth_id}" "$enable_ipv6"; then
-            ifname=$(get_pppoe_ifname "${VTH}${vth_id}")
-            gateway=$(get_pppoe_gateway "${VTH}${vth_id}")
-            ipv4=$(get_ip "$ifname" --ipv4)
-            configure_routing_table "$ifname" "$vth_id" "$ipv4" "$gateway"
-        fi
+        dial_helper "pppoe" "${VTH}${vth_id}" "$enable_ipv6"
         pppoe_num=$((pppoe_num - 1))
     done
     # dhcp dial
@@ -434,10 +415,11 @@ bulk_dial() {
 
 bulk_dial_clean() {
     for i in $DATA_DIR/*; do
-        dial_clean_all "$(basename "$i")"
+        [ -f "$i" ] || break
+        dial_clean_all "$(basename "$i")" >/dev/null 2>&1
     done
     for i in $(ip link show | grep -E -o 'vth[0-9]{0,3}'); do
-        dial_clean_all "$i"
+        dial_clean_all "$i" >/dev/null 2>&1
     done
 }
 
