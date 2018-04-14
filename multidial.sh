@@ -12,7 +12,9 @@ CONNECT_POLL=1
 CONNECT_TIMEOUT=10
 IPV6_PREFIX="2001:250:2003:2010:200:5efe"
 REMOTE_ROUTER="202.115.39.98"
+START_VTH_ID=1
 START_ADDRESS="121.48.228.10"
+GATEWAY="121.48.228.1"
 NETMASK=24
 
 ME=$(basename "$0")
@@ -60,6 +62,15 @@ get_pppoe_ifname() {
     [ -f "/var/run/$linkname.pid" ] && ppp_ifname=$(sed -n '2p' <"/var/run/$linkname.pid")
     [ -f "/etc/ppp/$linkname.pid" ] && ppp_ifname=$(sed -n '2p' <"/etc/ppp/$linkname.pid")
     $ECHO "$ppp_ifname"
+}
+
+get_pppoe_gateway() {
+    local ifname=$1
+    local ppp_ifname=''
+    local gateway=''
+    ppp_ifname=$(get_pppoe_ifname "$ifname")
+    gateway=$(ip -4 addr show "$ppp_ifname" 2>/dev/null | grep -o 'peer *[0-9\.]*' | awk '{print $2}')
+    $ECHO "$gateway"
 }
 
 pppoe_stop() {
@@ -111,7 +122,7 @@ pppoe_dial() {
         exit 1
     fi
     if [[ -f "/var/run/$linkname.pid" || -f "/etc/ppp/$linkname.pid" ]]; then
-        ppp_ifname=get_pppoe_ifname "$ifname"
+        ppp_ifname=$(get_pppoe_ifname "$ifname")
         $ECHO "$ME: There already seems to be a PPPoE connection up $linkname($ppp_ifname)" >&2
         exit 1
     fi
@@ -225,19 +236,22 @@ static_dial() {
     exit 1
 }
 
-#ifname ip gateway
+#ifname table_id ip gateway
 configure_routing_table() {
-    echo
+    ifname=$1
+    table_id=$2
+    ip=$3
+    gateway=$4
+    ip route add default via "$gateway" dev "$ifname" table "$table_id"
+    ip rule add from "$ip" table "$table_id"
 }
-
-CUR_VTH_ID=1
 
 get_next_vth_id() {
     while true; do
-        ip link show "${VTH}${CUR_VTH_ID}" >/dev/null 2>&1 || break
-        CUR_VTH_ID=$((CUR_VTH_ID + 1))
+        ip link show "${VTH}${START_VTH_ID}" >/dev/null 2>&1 || break
+        START_VTH_ID=$((START_VTH_ID + 1))
     done
-    $ECHO "$CUR_VTH_ID"
+    $ECHO "$START_VTH_ID"
 }
 
 get_next_address() {
@@ -258,6 +272,8 @@ get_next_address() {
 bulk_dial() {
     local optname
     local vth_id
+    local ifname
+    local gateway
     local pppoe_num=0
     local dhcp_num=0
     local static_num=0
@@ -295,6 +311,10 @@ bulk_dial() {
     while [ "$pppoe_num" -gt 0 ]; do
         vth_id=$(get_next_vth_id)
         pppoe_dial "${VTH}${vth_id}" "$enable_ipv6"
+        ifname=$(get_pppoe_ifname "${VTH}${vth_id}")
+        gateway=$(get_pppoe_gateway "${VTH}${vth_id}")
+        ipv4=$(get_ip "$ifname" --ipv4)
+        configure_routing_table "$ifname" "$vth_id" "$ipv4" "$gateway"
         pppoe_num=$((pppoe_num - 1))
     done
     # dhcp dial
@@ -314,7 +334,7 @@ bulk_dial() {
 }
 
 bulk_dial_clean() {
-    for i in $(ip link show | grep -E -o 'vth[0-9]{1,3}'); do
+    for i in $(ip link show | grep -E -o 'vth[0-9]{0,3}'); do
         dial_clean_all "$i"
     done
 }
