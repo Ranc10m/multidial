@@ -342,10 +342,10 @@ get_next_address() {
 # Args: [ifname] [table_id] [ip address] [gateway]
 # e.g. configure_routing_table vth1 1 121.48.228.11 121.48.228.1
 configure_routing_table() {
-    ifname=$1
-    table_id=$2
-    ip=$3
-    gateway=$4
+    local ifname=$1
+    local table_id=$2
+    local ip=$3
+    local gateway=$4
     [ -n "$ifname" ] && [ -n "$table_id" ] && [ -n "$ip" ] && [ -n "$gateway" ] && return 1
     ip route add default via "$gateway" dev "$ifname" table "$table_id"
     ip rule add from "$ip" table "$table_id"
