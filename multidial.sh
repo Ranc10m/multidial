@@ -193,13 +193,9 @@ pppoe_dial() {
     if [ "$2" = "--ipv6" ]; then
         enable_ipv6=1
     fi
-    if [ -n "$(get_pppoe_ifname "$ifname")" ]; then
-        error "pppoe_dial: There already seems to be a PPPoE connection up with $ifname"
-        exit 1
-    fi
     if ! pppd plugin rp-pppoe.so "$ifname" linkname "$ifname" \
         persist hide-password noauth user "$USER" password "$PASSWORD" >/dev/null 2>&1; then
-        remove_virtual_interface "$ifname"
+        dial_clean_all "$ifname"
         error "pppoe_dial: Cannot create PPPoE connection for $ifname"
         exit 1
     fi
@@ -245,10 +241,6 @@ dhcp_dial() {
     if [ "$2" = "--ipv6" ]; then
         enable_ipv6=1
     fi
-    if [ -n "$(get_ip "$ifname" --ipv4)" ]; then
-        error "dhcp_dial: There already seems to be a connection up with ($ifname)"
-        exit 1
-    fi
     dhclient -nw "$ifname"
     local TIME=0
     printf "Trying to create connection for %s " "$ifname"
@@ -291,10 +283,6 @@ static_dial() {
     if [ "$4" = "--ipv6" ]; then
         enable_ipv6=1
     fi
-    if [ -n "$(get_ip "$ifname" --ipv4)" ]; then
-        error "static_dial: There already seems to be a connection up with ($ifname)"
-        exit 1
-    fi
     printf "Trying to create connection for %s ." "$ifname"
     if ip addr add "$ipv4"/"$netmask" dev "$ifname" >/dev/null 2>&1; then
         if [ "$enable_ipv6" = "1" ]; then
@@ -336,13 +324,15 @@ dial_helper() {
         exit 1
     fi
     # The interface has not existed yet
-    if ! ip link show "$ifname" >/dev/null 2>&1; then
-        if ! create_virtual_interface "$ifname"; then
-            error "dial_helper: Cannot create the interface"
-            exit 1
-        fi
-        ip link set "$ifname" up
+    if ip link show "$ifname" >/dev/null 2>&1; then
+        error "dial_helper: There already seems to be a connection up with ($ifname)"
+        exit 1
     fi
+    if ! create_virtual_interface "$ifname"; then
+        error "dial_helper: Cannot create the interface"
+        exit 1
+    fi
+    ip link set "$ifname" up
     "${method}_dial" "$ifname" "$@"
 }
 
