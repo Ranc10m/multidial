@@ -310,13 +310,7 @@ dial_helper() {
     local ipv4
     local ipv6
     ifname2=$(grep ifname <"$DATA_DIR/$ifname" | cut -d ':' -f 2)
-    if [ "$enable_ipv6" = '1' ]; then
-        if ! build_isatap_tunnel "$ifname2"; then
-            error "Cannot build isatap tunnel for $ifname"
-            dial_clean_all "$ifname"
-            exit 1
-        fi
-    fi
+    [ "$enable_ipv6" = '1' ] && build_isatap_tunnel "$ifname2"
     ipv4=$(get_ip "$ifname2" --ipv4)
     ipv6=$(get_ip isa-"$ifname2" --ipv6)
     printf "ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
