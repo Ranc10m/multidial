@@ -1,7 +1,6 @@
 #!/bin/bash
-
-# Path to programs
-ECHO=$(which echo)
+#
+# Dial multiple internet connection over a single interface
 
 # Defaults
 VTH="vth"
@@ -20,79 +19,44 @@ NETMASK=24
 ME=$(basename "$0")
 # Must be root
 if [ "$(/usr/bin/id -u)" != 0 ]; then
-    $ECHO "$ME: You must be root to run this script" >&2
+    echo "$ME: You must be root to run this script" >&2
     exit 1
 fi
 
+usage() {
+    echo
+}
+
+error() {
+    echo "error: $*" >&2
+}
+
+# Output IP addresses on the interface
+# Args: [ifname] [--ipv4|ipv4]
+# e.g. get_ip vth0 --ipv4
 get_ip() {
     local ifname=$1
-    local family=''
+    local family
     [ "$2" = "--ipv4" ] && family='-4'
     [ "$2" = "--ipv6" ] && family='-6'
-    local addresses=''
+    local addresses
     addresses=$(ip "$family" addr show "$ifname" 2>/dev/null |
-        grep -o -E 'inet6?.*scope global' | sed 's/^inet6\{0,1\} *\([^ /]*\).*$/\1/')
-    $ECHO "$addresses"
+        grep -o -E 'inet6?.*scope global' |
+        sed 's/^inet6\{0,1\} *\([^ /]*\).*$/\1/')
+    echo "$addresses"
 }
 
-build_isatap_tunnel() {
-    local ifname=$1
-    local isatap_ifname=isa-"$ifname"
-    local ipv4=''
-    ipv4=$(get_ip "$ifname" --ipv4)
-    [ -z "$ipv4" ] && return 1
-    ip tunnel add "$isatap_ifname" mode sit remote "$REMOTE_ROUTER" local "$ipv4"
-    ip link set dev "$isatap_ifname" up
-    ip -6 addr add "$IPV6_PREFIX:$ipv4"/64 dev "$isatap_ifname"
-}
-
-destroy_isatap_tunnel() {
-    local ifname=$1
-    local isatap_ifname=isa-"$ifname"
-    if ip link show | grep "$isatap_ifname" >/dev/null; then
-        ip link set "$isatap_ifname" down
-        ip tunnel del "$isatap_ifname"
-    fi
-}
-
-get_pppoe_ifname() {
-    local ifname=$1
-    local linkname=ppp-$ifname
-    local ppp_ifname=''
-    [ -f "/var/run/$linkname.pid" ] && ppp_ifname=$(sed -n '2p' <"/var/run/$linkname.pid")
-    [ -f "/etc/ppp/$linkname.pid" ] && ppp_ifname=$(sed -n '2p' <"/etc/ppp/$linkname.pid")
-    $ECHO "$ppp_ifname"
-}
-
-get_pppoe_gateway() {
-    local ifname=$1
-    local ppp_ifname=''
-    local gateway=''
-    ppp_ifname=$(get_pppoe_ifname "$ifname")
-    gateway=$(ip -4 addr show "$ppp_ifname" 2>/dev/null | grep -o 'peer *[0-9\.]*' | awk '{print $2}')
-    $ECHO "$gateway"
-}
-
-pppoe_stop() {
-    local ifname=$1
-    local linkname=ppp-$ifname
-    local ppp_ifname=''
-    local pppd_id=''
-    ppp_ifname=$(get_pppoe_ifname "$ifname")
-    [ -n "$ppp_ifname" ] && destroy_isatap_tunnel "$ppp_ifname"
-    [ -f "/var/run/$linkname.pid" ] && pppd_id=$(sed -n '1p' <"/var/run/$linkname.pid")
-    [ -f "/etc/ppp/$linkname.pid" ] && pppd_id=$(sed -n '1p' <"/etc/ppp/$linkname.pid")
-    [ -n "$pppd_id" ] && kill "$pppd_id" >/dev/null 2>&1
-}
-
+# Create virtual interface for dial
+# Args: [ifname]
+# e.g. create_virtual_interface vth0
 create_virtual_interface() {
     local ifname=$1
-    if ! ip link add link "$ETH" name "$ifname" type macvlan >/dev/null 2>&1; then
-        $ECHO "Cannot create virtual interface $ifname" >&2
-        exit 1
-    fi
+    ip link add link "$ETH" name "$ifname" type macvlan >/dev/null 2>&1 || return 1
 }
 
+# Remove virtual interface
+# Args: [ifname]
+# e.g. remove_virtual_interface vth0
 remove_virtual_interface() {
     local ifname=$1
     ip link show "$ifname" >/dev/null 2>&1 || return
@@ -102,6 +66,75 @@ remove_virtual_interface() {
     fi
 }
 
+# Build a isatap tunnel
+# Args: [ifname]
+# e.g. build_isatap_tunnel vth0
+build_isatap_tunnel() {
+    local ifname=$1
+    local isatap_ifname=isa-"$ifname"
+    local ipv4
+    ipv4=$(get_ip "$ifname" --ipv4)
+    [ -z "$ipv4" ] && return 1
+    ip link show | grep "$isatap_ifname" >/dev/null && return 1
+    ip tunnel add "$isatap_ifname" mode sit remote "$REMOTE_ROUTER" local "$ipv4"
+    ip link set dev "$isatap_ifname" up
+    ip -6 addr add "$IPV6_PREFIX:$ipv4"/64 dev "$isatap_ifname"
+}
+
+# Destroy a isatap tunnel
+# Args: [ifname]
+# e.g. destroy_isatap_tunnel vth0
+destroy_isatap_tunnel() {
+    local ifname=$1
+    local isatap_ifname=isa-"$ifname"
+    if ip link show | grep "$isatap_ifname" >/dev/null; then
+        ip link set "$isatap_ifname" down
+        ip tunnel del "$isatap_ifname"
+    fi
+}
+
+# Output pppoe dial ifname
+# Args: [ifname]
+# e.g. get_pppoe_ifname vth0
+get_pppoe_ifname() {
+    local ifname=$1
+    local linkname=ppp-$ifname
+    local ppp_ifname
+    [ -f "/var/run/$linkname.pid" ] && ppp_ifname=$(sed -n '2p' <"/var/run/$linkname.pid")
+    [ -f "/etc/ppp/$linkname.pid" ] && ppp_ifname=$(sed -n '2p' <"/etc/ppp/$linkname.pid")
+    echo "$ppp_ifname"
+}
+
+# Output pppoe dial gateway
+# Args: [ifname]
+# e.g. get_pppoe_gateway vth0
+get_pppoe_gateway() {
+    local ifname=$1
+    local ppp_ifname
+    local gateway
+    ppp_ifname=$(get_pppoe_ifname "$ifname")
+    gateway=$(ip -4 addr show "$ppp_ifname" 2>/dev/null | grep -o 'peer *[0-9\.]*' | awk '{print $2}')
+    echo "$gateway"
+}
+
+# Stop pppoe dial
+# Args: [ifname]
+# e.g. pppoe_stop vth0
+pppoe_stop() {
+    local ifname=$1
+    local linkname=ppp-$ifname
+    local ppp_ifname
+    local pppd_id
+    ppp_ifname=$(get_pppoe_ifname "$ifname")
+    [ -n "$ppp_ifname" ] && destroy_isatap_tunnel "$ppp_ifname"
+    [ -f "/var/run/$linkname.pid" ] && pppd_id=$(sed -n '1p' <"/var/run/$linkname.pid")
+    [ -f "/etc/ppp/$linkname.pid" ] && pppd_id=$(sed -n '1p' <"/etc/ppp/$linkname.pid")
+    [ -n "$pppd_id" ] && kill "$pppd_id" >/dev/null 2>&1
+}
+
+# Clean all dial associated with the interface
+# Args: [ifname]
+# e.g. dial_clean_all vth0
 dial_clean_all() {
     local ifname=$1
     pppoe_stop "$ifname"
@@ -109,6 +142,9 @@ dial_clean_all() {
     remove_virtual_interface "$ifname"
 }
 
+# PPPoE dial
+# Args: [ifname] [--ipv6]
+# e.g. pppoe_dial vth0 --ipv6
 pppoe_dial() {
     local ifname=$1
     local linkname=ppp-$ifname
@@ -118,21 +154,25 @@ pppoe_dial() {
         enable_ipv6=1
     fi
     if [ -z "$ifname" ]; then
-        $ECHO "$ME: You must specify a interface" >&2
+        error "pppoe_dial: You must specify a interface"
         exit 1
     fi
-    if [[ -f "/var/run/$linkname.pid" || -f "/etc/ppp/$linkname.pid" ]]; then
-        ppp_ifname=$(get_pppoe_ifname "$ifname")
-        $ECHO "$ME: There already seems to be a PPPoE connection up $linkname($ppp_ifname)" >&2
+    if [ -n "$(get_pppoe_ifname "$ifname")" ]; then
+        error "pppoe_dial: There already seems to be a PPPoE connection up with $ifname"
         exit 1
     fi
-    # interface has not exist yet
-    ip link show "$ifname" >/dev/null 2>&1 || create_virtual_interface "$ifname"
-    ip link set "$ifname" up
+    # The interface has not existed yet
+    if ! ip link show "$ifname" >/dev/null 2>&1; then
+        if ! create_virtual_interface "$ifname"; then
+            error "pppoe_dial: Cannot create the interface"
+            exit 1
+        fi
+        ip link set "$ifname" up
+    fi
     if ! pppd plugin rp-pppoe.so "$ifname" linkname "$ifname" \
         persist hide-password noauth user "$USER" password "$PASSWORD" >/dev/null 2>&1; then
         remove_virtual_interface "$ifname"
-        $ECHO "Cannot create connection for $ifname" >&2
+        error "pppoe_dial: Cannot create PPPoE connection for $ifname"
         exit 1
     fi
     local TIME=0
@@ -140,15 +180,20 @@ pppoe_dial() {
     while true; do
         ppp_ifname=$(get_pppoe_ifname "$ifname")
         if [ -n "$ppp_ifname" ]; then
-            local ipv4=''
-            local ipv6=''
+            local ipv4
+            local ipv6
             ipv4=$(get_ip "$ppp_ifname" --ipv4)
             if [ -n "$ipv4" ]; then
-                [ "$enable_ipv6" = "1" ] && build_isatap_tunnel "$ppp_ifname"
+                if [ "$enable_ipv6" = "1" ]; then
+                    if ! build_isatap_tunnel "$ppp_ifname"; then
+                        error "Cannot build isatap tunnel for $ifname"
+                        exit 1
+                    fi
+                fi
+                echo " Connected!"
                 ipv6=$(get_ip isa-"$ppp_ifname" --ipv6)
-                $ECHO " Connected!"
                 printf "ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
-                return 0
+                return
             fi
         fi
         printf .
@@ -159,10 +204,13 @@ pppoe_dial() {
         fi
     done
     dial_clean_all "$ifname"
-    $ECHO " Failed!" >&2
-    exit 1
+    echo " Failed!"
+    return 1
 }
 
+# DHCP dial
+# Args: [ifname] [--ipv6]
+# e.g. dhcp_dial vth0 --ipv6
 dhcp_dial() {
     local ifname=$1
     local enable_ipv6=0
@@ -170,28 +218,39 @@ dhcp_dial() {
         enable_ipv6=1
     fi
     if [ -z "$ifname" ]; then
-        $ECHO "$ME: You must specify a interface"
+        error "dhcp_dial: You must specify a interface"
         exit 1
     fi
     if [ -n "$(get_ip "$ifname" --ipv4)" ]; then
-        $ECHO "$ME: There already seems to be a connection up $linkname" >&2
+        error "dhcp_dial: There already seems to be a connection up with ($ifname)"
         exit 1
     fi
-    ip link show "$ifname" >/dev/null 2>&1 || create_virtual_interface "$ifname"
-    ip link set "$ifname" up
+    # The interface has not existed yet
+    if ! ip link show "$ifname" >/dev/null 2>&1; then
+        if ! create_virtual_interface "$ifname"; then
+            error "dhcp_dial: Cannot create the interface"
+            exit 1
+        fi
+        ip link set "$ifname" up
+    fi
     dhclient -nw "$ifname"
     local TIME=0
     printf "Trying to create connection for %s " "$ifname"
     while true; do
-        local ipv4=''
-        local ipv6=''
+        local ipv4
+        local ipv6
         ipv4=$(get_ip "$ifname" --ipv4)
         if [ -n "$ipv4" ]; then
-            [ "$enable_ipv6" = "1" ] && build_isatap_tunnel "$ifname"
+            if [ "$enable_ipv6" = "1" ]; then
+                if ! build_isatap_tunnel "$ifname"; then
+                    error "Cannot build isatap tunnel for $ifname"
+                    exit 1
+                fi
+            fi
+            echo " Connected!"
             ipv6=$(get_ip isa-"$ifname" --ipv6)
-            $ECHO " Connected!"
             printf "ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
-            return 0
+            return
         fi
         printf .
         sleep $CONNECT_POLL
@@ -201,10 +260,13 @@ dhcp_dial() {
         fi
     done
     dial_clean_all "$ifname"
-    $ECHO " Failed!" >&2
-    exit 1
+    echo " Failed!"
+    return 1
 }
 
+# Static dial
+# Args: [ifname] [ipv4 address] [netmask] [--ipv6]
+# e.g. static_dial vth0 121.48.228.10 24 --ipv6
 static_dial() {
     local ifname=$1
     local ipv4=$2
@@ -214,49 +276,56 @@ static_dial() {
         enable_ipv6=1
     fi
     if [ -z "$ifname" ]; then
-        $ECHO "$ME: You must specify a interface"
+        error "static_dial: You must specify a interface"
         exit 1
     fi
     if [ -n "$(get_ip "$ifname" --ipv4)" ]; then
-        $ECHO "$ME: There already seems to be a connection up $linkname" >&2
+        error "static_dial: There already seems to be a connection up with ($ifname)"
         exit 1
     fi
-    printf "Trying to create connection for %s " "$ifname"
-    ip link show "$ifname" >/dev/null 2>&1 || create_virtual_interface "$ifname"
-    ip link set "$ifname" up
+    printf "Trying to create connection for %s ." "$ifname"
+    # The interface has not existed yet
+    if ! ip link show "$ifname" >/dev/null 2>&1; then
+        if ! create_virtual_interface "$ifname"; then
+            error "static_dial: Cannot create the interface"
+            exit 1
+        fi
+        ip link set "$ifname" up
+    fi
     if ip addr add "$ipv4"/"$netmask" dev "$ifname" >/dev/null 2>&1; then
-        [ "$enable_ipv6" = "1" ] && build_isatap_tunnel "$ifname"
+        if [ "$enable_ipv6" = "1" ]; then
+            if ! build_isatap_tunnel "$ifname"; then
+                error "Cannot build isatap tunnel for $ifname"
+                exit 1
+            fi
+        fi
+        echo " Connected!"
         ipv6=$(get_ip isa-"$ifname" --ipv6)
-        $ECHO " Connected!"
         printf "ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
         return 0
     fi
-    remove_virtual_interface "$ifname"
-    $ECHO " Failed!" >&2
-    exit 1
+    dial_clean_all "$ifname"
+    echo " Failed!"
+    return 1
 }
 
-#ifname table_id ip gateway
-configure_routing_table() {
-    ifname=$1
-    table_id=$2
-    ip=$3
-    gateway=$4
-    ip route add default via "$gateway" dev "$ifname" table "$table_id"
-    ip rule add from "$ip" table "$table_id"
-}
-
+# Output next virtual interface id
+# Args: none
+# e.g. get_next_vth_id
 get_next_vth_id() {
     while true; do
         ip link show "${VTH}${START_VTH_ID}" >/dev/null 2>&1 || break
         START_VTH_ID=$((START_VTH_ID + 1))
     done
-    $ECHO "$START_VTH_ID"
+    echo "$START_VTH_ID"
 }
 
+# Output next static address
+# Args: none
+# e.g. get_next_address
 get_next_address() {
     while true; do
-        local a=('' '' '' '')
+        local a=()
         local i=0
         ip -4 addr show | grep "$START_ADDRESS" >/dev/null || break
         for n in $(echo "$START_ADDRESS" | tr '.' ' '); do
@@ -264,9 +333,22 @@ get_next_address() {
             i=$((i + 1))
         done
         a[3]=$((a[3] + 1))
-        START_ADDRESS=$($ECHO "${a[@]}" | tr ' ' '.')
+        START_ADDRESS=$(echo "${a[@]}" | tr ' ' '.')
     done
-    $ECHO "$START_ADDRESS"
+    echo "$START_ADDRESS"
+}
+
+# Configure routing table
+# Args: [ifname] [table_id] [ip address] [gateway]
+# e.g. configure_routing_table vth1 1 121.48.228.11 121.48.228.1
+configure_routing_table() {
+    ifname=$1
+    table_id=$2
+    ip=$3
+    gateway=$4
+    [ -n "$ifname" ] && [ -n "$table_id" ] && [ -n "$ip" ] && [ -n "$gateway" ] && return 1
+    ip route add default via "$gateway" dev "$ifname" table "$table_id"
+    ip rule add from "$ip" table "$table_id"
 }
 
 bulk_dial() {
@@ -293,16 +375,16 @@ bulk_dial() {
             enable_ipv6='--ipv6'
             ;;
         "?")
-            $ECHO "Unknown option $OPTARG" >&2
+            echo "Unknown option $OPTARG" >&2
             exit 1
             ;;
         ":")
-            $ECHO "No argument value for option $OPTARG" >&2
+            echo "No argument value for option $OPTARG" >&2
             exit 1
             ;;
         "*")
             # Should not occur
-            $ECHO "Unknown error while processing options" >&2
+            echo "Unknown error while processing options" >&2
             exit 1
             ;;
         esac
@@ -310,11 +392,12 @@ bulk_dial() {
     #pppoe dial
     while [ "$pppoe_num" -gt 0 ]; do
         vth_id=$(get_next_vth_id)
-        pppoe_dial "${VTH}${vth_id}" "$enable_ipv6"
-        ifname=$(get_pppoe_ifname "${VTH}${vth_id}")
-        gateway=$(get_pppoe_gateway "${VTH}${vth_id}")
-        ipv4=$(get_ip "$ifname" --ipv4)
-        configure_routing_table "$ifname" "$vth_id" "$ipv4" "$gateway"
+        if pppoe_dial "${VTH}${vth_id}" "$enable_ipv6"; then
+            ifname=$(get_pppoe_ifname "${VTH}${vth_id}")
+            gateway=$(get_pppoe_gateway "${VTH}${vth_id}")
+            ipv4=$(get_ip "$ifname" --ipv4)
+            configure_routing_table "$ifname" "$vth_id" "$ipv4" "$gateway"
+        fi
         pppoe_num=$((pppoe_num - 1))
     done
     # dhcp dial
