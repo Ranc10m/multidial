@@ -186,11 +186,11 @@ configure_routing_table() {
     local gateway4
     local gateway6
     local table_id
-    ifname2=$(grep 'ifname' <"$DATA_DIR/$ifname" | sed 's/ifname://')
-    ipv4=$(grep 'ipv4' <"$DATA_DIR/$ifname" | sed 's/ipv4://')
-    ipv6=$(grep 'ipv6' <"$DATA_DIR/$ifname" | sed 's/ipv6://')
-    gateway4=$(grep 'gateway4' <"$DATA_DIR/$ifname" | sed 's/gateway4://')
-    gateway6=$(grep 'gateway6' <"$DATA_DIR/$ifname" | sed 's/gateway6://')
+    ifname2=$(grep 'ifname' <"$DATA_DIR/$ifname" | sed 's/^ifname://')
+    ipv4=$(grep 'ipv4' <"$DATA_DIR/$ifname" | sed 's/^ipv4://')
+    ipv6=$(grep 'ipv6' <"$DATA_DIR/$ifname" | sed 's/^ipv6://')
+    gateway4=$(grep 'gateway4' <"$DATA_DIR/$ifname" | sed 's/^gateway4://')
+    gateway6=$(grep 'gateway6' <"$DATA_DIR/$ifname" | sed 's/^gateway6://')
     table_id=$(get_empty_routing_table)
     echo "table_id:${table_id}" >>"$DATA_DIR/$ifname"
     if [ -n "$ipv4" ]; then
@@ -209,7 +209,7 @@ configure_routing_table() {
 remove_routing_table() {
     local ifname=$1
     local table_id
-    table_id=$(grep 'table_id' <"$DATA_DIR/$ifname" | sed 's/table_id://')
+    table_id=$(grep 'table_id' <"$DATA_DIR/$ifname" | sed 's/^table_id://')
     if [ -n "$table_id" ]; then
         ip -4 route del default table "$table_id" >/dev/null 2>&1
         ip -6 route del default table "$table_id" >/dev/null 2>&1
@@ -356,7 +356,7 @@ dial_helper() {
     local ifname2
     local ipv4
     local ipv6
-    ifname2=$(grep ifname <"$DATA_DIR/$ifname" | cut -d ':' -f 2)
+    ifname2=$(grep ifname <"$DATA_DIR/$ifname" | sed 's/^ifname://')
     [ "$enable_ipv6" = '1' ] && build_isatap_tunnel "$ifname2"
     ipv4=$(get_ip "$ifname2" --ipv4)
     ipv6=$(get_ip isa-"$ifname2" --ipv6)
@@ -495,7 +495,7 @@ main() {
     case "$1" in
     -i)
         ifname=$2
-        pppoe_dial "$ifname"
+        dial_helper "pppoe" "$ifname"
         ;;
     -r)
         ifname=$2
