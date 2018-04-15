@@ -118,6 +118,18 @@ get_pppoe_ifname() {
     echo "$ppp_ifname"
 }
 
+# Output dhcp dial ifname
+# Args: [ifname]
+# e.g. get_dhcp_gateway vth0
+get_dhcp_gateway() {
+    local ifname=$1
+    gateway=$(ip -4 route |
+        grep "^[0-9\\./]* .*${ifname}" |
+        sed "s/\\(^[0-9\\.]*\\).*$/\\1/" |
+        sed 's/0$/1/')
+    echo "$gateway"
+}
+
 # Output pppoe dial gateway
 # Args: [ifname]
 # e.g. get_pppoe_gateway vth0
@@ -173,24 +185,6 @@ remove_routing_table() {
 
 }
 
-# Clean all dial associated with the interface
-# Args: [ifname]
-# e.g. dial_clean_all vth0
-dial_clean_all() {
-    local ifname=$1
-    if [ -z "$ifname" ]; then
-        error "You must specify a interface"
-        exit 1
-    fi
-    if ! ip link show "$ifname" >/dev/null 2>&1; then
-        error "Interface \"$ifname\" does not exist"
-        exit 1
-    fi
-    pppoe_stop "$ifname"
-    destroy_isatap_tunnel "$ifname"
-    remove_virtual_interface "$ifname"
-}
-
 # PPPoE dial
 # Args: [ifname]
 # e.g. pppoe_dial vth0
@@ -198,6 +192,8 @@ pppoe_dial() {
     local ifname=$1
     local linkname=ppp-$ifname
     local ppp_ifname
+    local ipv4
+    local gateway
     if ! pppd plugin rp-pppoe.so "$ifname" linkname "$ifname" \
         persist hide-password noauth user "$USER" password "$PASSWORD" >/dev/null 2>&1; then
         dial_clean_all "$ifname"
@@ -208,8 +204,14 @@ pppoe_dial() {
     printf "Trying to create connection for %s " "$ifname"
     while true; do
         ppp_ifname=$(get_pppoe_ifname "$ifname")
-        if [ -n "$ppp_ifname" ] && [ -n "$(get_ip "$ppp_ifname" --ipv4)" ]; then
-            echo "ifname:${ppp_ifname}" >>"$DATA_DIR/$ifname"
+        ipv4=$(get_ip "$ppp_ifname" --ipv4)
+        if [ -n "$ppp_ifname" ] && [ -n "$ipv4" ]; then
+            gateway=$(get_pppoe_gateway "$ifname")
+            {
+                echo "ifname:${ppp_ifname}"
+                echo "ipv4:${ipv4}"
+                echo "gateway:${gateway}"
+            } >>"$DATA_DIR/$ifname"
             echo " Connected!"
             return
         fi
@@ -230,12 +232,20 @@ pppoe_dial() {
 # e.g. dhcp_dial vth0
 dhcp_dial() {
     local ifname=$1
+    local ipv4
+    local gateway
     dhclient -nw "$ifname"
     local TIME=0
     printf "Trying to create connection for %s " "$ifname"
     while true; do
-        if [ -n "$(get_ip "$ifname" --ipv4)" ]; then
-            echo "ifname:${ifname}" >>"$DATA_DIR/$ifname"
+        ipv4=$(get_ip "$ifname" --ipv4)
+        gateway=$(get_dhcp_gateway "$ifname")
+        if [ -n "$ipv4" ]; then
+            {
+                echo "ifname:${ifname}"
+                echo "ipv4:${ipv4}"
+                echo "gateway:${gateway}"
+            } >>"$DATA_DIR/$ifname"
             echo " Connected!"
             return
         fi
@@ -260,7 +270,11 @@ static_dial() {
     local netmask=$3
     printf "Trying to create connection for %s ." "$ifname"
     if ip addr add "$ipv4"/"$netmask" dev "$ifname" >/dev/null 2>&1; then
-        echo "ifname:${ifname}" >>"$DATA_DIR/$ifname"
+        {
+            echo "ifname:${ifname}"
+            echo "ipv4:${ipv4}"
+            echo "gateway:${GATEWAY}"
+        } >>"$DATA_DIR/$ifname"
         echo " Connected!"
         return 0
     fi
@@ -405,6 +419,24 @@ bulk_dial() {
         dial_helper "static" "${VTH}${vth_id}" "$ipv4" "$netmask" "$enable_ipv6"
         static_num=$((static_num - 1))
     done
+}
+
+# Clean all dial associated with the interface
+# Args: [ifname]
+# e.g. dial_clean_all vth0
+dial_clean_all() {
+    local ifname=$1
+    if [ -z "$ifname" ]; then
+        error "You must specify a interface"
+        return 1
+    fi
+    if ! ip link show "$ifname" >/dev/null 2>&1; then
+        error "Interface \"$ifname\" does not exist"
+        return 1
+    fi
+    pppoe_stop "$ifname"
+    destroy_isatap_tunnel "$ifname"
+    remove_virtual_interface "$ifname"
 }
 
 bulk_dial_clean() {
