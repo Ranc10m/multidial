@@ -24,7 +24,7 @@ PASSWORD=""
 # ISATAP configuration
 REMOTE_ROUTER="202.115.39.98"
 IPV6_PREFIX="2001:250:2003:2010:200:5efe"
-IPV6_GATEWAY="$IPV6_PREFIX:$REMOTE_ROUTER"
+IPV6_GATEWAY="2001:250:2003:2010:200:5efe:ca73:2762"
 
 # Static IP address
 ADDRESS="121.48.228.10"
@@ -139,7 +139,8 @@ get_pppoe_gateway() {
     local ppp_ifname
     local gateway
     ppp_ifname=$(get_pppoe_ifname "$ifname")
-    gateway=$(ip -4 addr show "$ppp_ifname" 2>/dev/null | grep -o 'peer *[0-9\.]*' | awk '{print $2}')
+    gateway=$(ip -4 addr show "$ppp_ifname" 2>/dev/null |
+        grep -o 'peer *[0-9\.]*' | awk '{print $2}')
     echo "$gateway"
 }
 
@@ -162,7 +163,16 @@ pppoe_stop() {
 # Args: none
 # e.g. get_empty_routing_table
 get_empty_routing_table() {
-    echo
+    [ -z "$_cur_table_id" ] && _cur_table_id=1
+    while true; do
+        [ -z "$(ip -4 route show table ${_cur_table_id})" ] &&
+            [ -z "$(ip -6 route show table ${_cur_table_id})" ] &&
+            break
+        _cur_table_id=$((_cur_table_id + 1))
+    done
+    while ip -4 rule del table "$_cur_table_id" >/dev/null 2>&1; do true; done
+    while ip -6 rule del table "$_cur_table_id" >/dev/null 2>&1; do true; done
+    echo "$_cur_table_id"
 }
 
 # Configure routing table
@@ -170,20 +180,42 @@ get_empty_routing_table() {
 # e.g. configure_routing_table vth1 1 121.48.228.11 121.48.228.1
 configure_routing_table() {
     local ifname=$1
-    local table_id=$2
-    local ip=$3
-    local gateway=$4
-    [ -n "$ifname" ] && [ -n "$table_id" ] && [ -n "$ip" ] && [ -n "$gateway" ] && return 1
-    ip route add default via "$gateway" dev "$ifname" table "$table_id"
-    ip rule add from "$ip" table "$table_id"
+    local ipv4
+    local ipv6
+    local ifname2
+    local gateway4
+    local gateway6
+    local table_id
+    ifname2=$(grep 'ifname' <"$DATA_DIR/$ifname" | sed 's/ifname://')
+    ipv4=$(grep 'ipv4' <"$DATA_DIR/$ifname" | sed 's/ipv4://')
+    ipv6=$(grep 'ipv6' <"$DATA_DIR/$ifname" | sed 's/ipv6://')
+    gateway4=$(grep 'gateway4' <"$DATA_DIR/$ifname" | sed 's/gateway4://')
+    gateway6=$(grep 'gateway6' <"$DATA_DIR/$ifname" | sed 's/gateway6://')
+    table_id=$(get_empty_routing_table)
+    echo "table_id:${table_id}" >>"$DATA_DIR/$ifname"
+    if [ -n "$ipv4" ]; then
+        ip -4 route add default via "$gateway4" dev "$ifname2" table "$table_id"
+        ip -4 rule add from "$ipv4" table "$table_id"
+    fi
+    if [ -n "$ipv6" ]; then
+        ip -6 route add default via "$gateway6" dev "isa-${ifname2}" table "$table_id"
+        ip -6 rule add from "$ipv6" table "$table_id"
+    fi
 }
 
 # Configure routing table
 # Args: [ifname]
-# e.g. delete_routing_table 1
+# e.g. remove_routing_table vth0
 remove_routing_table() {
-    local table_id=$2
-
+    local ifname=$1
+    local table_id
+    table_id=$(grep 'table_id' <"$DATA_DIR/$ifname" | sed 's/table_id://')
+    if [ -n "$table_id" ]; then
+        ip -4 route del default table "$table_id" >/dev/null 2>&1
+        ip -6 route del default table "$table_id" >/dev/null 2>&1
+        while ip -4 rule del table "$table_id" >/dev/null 2>&1; do true; done
+        while ip -6 rule del table "$table_id" >/dev/null 2>&1; do true; done
+    fi
 }
 
 # PPPoE dial
@@ -211,7 +243,7 @@ pppoe_dial() {
             {
                 echo "ifname:${ppp_ifname}"
                 echo "ipv4:${ipv4}"
-                echo "gateway:${gateway}"
+                echo "gateway4:${gateway}"
             } >>"$DATA_DIR/$ifname"
             echo " Connected!"
             return
@@ -245,7 +277,7 @@ dhcp_dial() {
             {
                 echo "ifname:${ifname}"
                 echo "ipv4:${ipv4}"
-                echo "gateway:${gateway}"
+                echo "gateway4:${gateway}"
             } >>"$DATA_DIR/$ifname"
             echo " Connected!"
             return
@@ -274,7 +306,7 @@ static_dial() {
         {
             echo "ifname:${ifname}"
             echo "ipv4:${ipv4}"
-            echo "gateway:${GATEWAY}"
+            echo "gateway4:${GATEWAY}"
         } >>"$DATA_DIR/$ifname"
         echo " Connected!"
         return 0
@@ -328,6 +360,13 @@ dial_helper() {
     [ "$enable_ipv6" = '1' ] && build_isatap_tunnel "$ifname2"
     ipv4=$(get_ip "$ifname2" --ipv4)
     ipv6=$(get_ip isa-"$ifname2" --ipv6)
+    if [ -n "$ipv6" ]; then
+        {
+            echo "ipv6:${ipv6}"
+            echo "gateway6:${IPV6_GATEWAY}"
+        } >>"$DATA_DIR/$ifname"
+    fi
+    configure_routing_table "$ifname"
     printf "ipv4:%s ipv6:%s\\n" "$ipv4" "$ipv6"
 }
 
@@ -435,8 +474,9 @@ dial_clean_all() {
         error "Interface \"$ifname\" does not exist"
         return 1
     fi
-    pppoe_stop "$ifname"
+    remove_routing_table "$ifname"
     destroy_isatap_tunnel "$ifname"
+    pppoe_stop "$ifname"
     remove_virtual_interface "$ifname"
 }
 
