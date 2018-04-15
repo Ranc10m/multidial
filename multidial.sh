@@ -123,6 +123,7 @@ get_pppoe_ifname() {
 # e.g. get_dhcp_gateway vth0
 get_dhcp_gateway() {
     local ifname=$1
+    local gateway
     gateway=$(ip -4 route |
         grep "^[0-9\\./]* .*${ifname}" |
         sed "s/\\(^[0-9\\.]*\\).*$/\\1/" |
