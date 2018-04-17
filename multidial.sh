@@ -27,7 +27,7 @@ IPV6_PREFIX="2001:250:2003:2010:200:5efe"
 IPV6_GATEWAY="2001:250:2003:2010:200:5efe:ca73:2762"
 
 # Static IP address
-ADDRESS="121.48.228.10"
+ADDRESS="121.48.228.21"
 GATEWAY="121.48.228.1"
 NETMASK=24
 
@@ -267,7 +267,7 @@ dhcp_dial() {
     local ifname=$1
     local ipv4
     local gateway
-    dhclient -nw "$ifname"
+    dhclient -nw "$ifname" 2>/dev/null
     local TIME=0
     printf "Trying to create connection for %s " "$ifname"
     while true; do
@@ -390,7 +390,7 @@ get_next_address() {
     while true; do
         local a=()
         local i=0
-        ip -4 addr show | grep "$_cur_address" >/dev/null || break
+        [ -z "$(ip -4 addr show to "$_cur_address")" ] && break
         for n in $(echo "$_cur_address" | tr '.' ' '); do
             a["$i"]=$n
             i=$((i + 1))
@@ -474,6 +474,7 @@ dial_clean_all() {
         error "Interface \"$ifname\" does not exist"
         return 1
     fi
+    pgrep -f "dhclient -nw $ifname" | xargs kill 2>/dev/null
     remove_routing_table "$ifname"
     destroy_isatap_tunnel "$ifname"
     pppoe_stop "$ifname"
