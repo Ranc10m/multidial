@@ -13,6 +13,7 @@ ETH="eth0"
 CONNECT_POLL=1
 CONNECT_TIMEOUT=10
 DATA_DIR='/tmp/multidial'
+MAXCONN=100
 
 # Available dial method
 METHODS=('pppoe' 'dhcp' 'static')
@@ -487,22 +488,22 @@ main() {
         case "$optname" in
         "p")
             pppoe_num="$OPTARG"
-            if ! [ "$pppoe_num" -le 100 ] 2>/dev/null; then
-                error "Connection num should be in [0-100]"
+            if ! [ "$pppoe_num" -le "$MAXCONN" ] 2>/dev/null; then
+                error "Connection num should be in [0-$MAXCONN]"
                 exit 1
             fi
             ;;
         "d")
             dhcp_num="$OPTARG"
             if ! [ "$dhcp_num" -le 100 ] 2>/dev/null; then
-                error "Connection num should be in [0-100]"
+                error "Connection num should be in [0-$MAXCONN]"
                 exit 1
             fi
             ;;
         "s")
             static_num="$OPTARG"
             if ! [ "$static_num" -le 100 ] 2>/dev/null; then
-                error "Connection num should be in [0-100]"
+                error "Connection num should be in [0-$MAXCONN]"
                 exit 1
             fi
             ;;
