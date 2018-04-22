@@ -480,6 +480,7 @@ usage() {
     echo "    -i <interface>       Specify a real interface, default: eth0"
     echo "    -r <interface>       Remove all connections over this interface"
     echo "    -c                   Remove all connections over all virtual interfaces"
+    echo "    -l                   List all ipv4 and ipv6 addresses"
     echo "    -h                   Print this message."
 }
 
