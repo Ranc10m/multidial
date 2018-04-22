@@ -461,6 +461,14 @@ batch_dial_clean() {
     done
 }
 
+# Show all ip addresses over the all interfaces
+# Args: none
+# e.g. show_all_ip
+show_all_ip() {
+    find $DATA_DIR/ -maxdepth 1 -type f -print0 | xargs -0 grep ipv4 | sed 's/^.*ipv4://'
+    find $DATA_DIR/ -maxdepth 1 -type f -print0 | xargs -0 grep ipv6 | sed 's/^.*ipv6://'
+}
+
 usage() {
     echo "Usage: multidial [OPTION]"
     echo "This shell script provide help to dial multiple internet connection over a single interface."
@@ -484,7 +492,7 @@ main() {
     local clean_args
     # make sure the data dir exists
     [ ! -d "$DATA_DIR" ] && mkdir -p "$DATA_DIR"
-    while getopts ":p:d:s:6i:r:ch" optname; do
+    while getopts ":p:d:s:6i:r:chl" optname; do
         case "$optname" in
         "p")
             pppoe_num="$OPTARG"
@@ -512,6 +520,10 @@ main() {
             ;;
         "i")
             ETH="$OPTARG"
+            if ! ip link show "$ETH" >/dev/null 2>&1; then
+                error "Interface ${ETH} does not exist, you must specify a existed interface"
+                exit 1
+            fi
             ;;
 
         "r")
@@ -519,6 +531,14 @@ main() {
             ;;
         "c")
             clean_args="all"
+            ;;
+        "l")
+            if [ "$#" != "1" ] || [ "$1" != "-l" ]; then
+                error "invalid arguments"
+                exit 1
+            fi
+            show_all_ip
+            exit 0
             ;;
         "h")
             usage
@@ -539,10 +559,6 @@ main() {
             ;;
         esac
     done
-    if ! ip link show "$ETH" >/dev/null 2>&1; then
-        error "Interface ${ETH} does not exist, you must specify a existed interface"
-        exit 1
-    fi
     if [ -z "${pppoe_num}${dhcp_num}${static_num}${enable_ipv6}${clean_args}" ]; then
         if [ -n "$*" ]; then
             error "invalid arguments: $*"
@@ -559,11 +575,10 @@ main() {
     if [ -n "$clean_args" ]; then
         if [ "$clean_args" = "all" ]; then
             batch_dial_clean
-            exit 0
         else
             dial_clean_all "$clean_args" || exit 1
-            exit 0
         fi
+        exit 0
     fi
     [ -n "$pppoe_num" ] && batch_dial "pppoe" "$pppoe_num" "$enable_ipv6"
     [ -n "$dhcp_num" ] && batch_dial "dhcp" "$dhcp_num" "$enable_ipv6"
