@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright 2017-2018 Ranc10m <xiayjchn@gmail.com>
+# Copyright (c) 2018 Ranc10m <xiayjchn@gmail.com>
 #
 # This is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -35,12 +35,6 @@ error() {
     echo "error: $*" >&2
 }
 
-# Must be root
-if [ "$(/usr/bin/id -u)" != 0 ]; then
-    error "You must be root to run this script"
-    exit 1
-fi
-
 # Output IP addresses on the interface
 # Args: [ifname] [--ipv4|ipv4]
 # e.g. get_ip vth0 --ipv4
@@ -63,7 +57,7 @@ create_virtual_interface() {
     local ifname=$1
     [ -f "$DATA_DIR/$ifname" ] && rm -f "$DATA_DIR/$ifname" 2>/dev/null
     ip link add link "$ETH" name "$ifname" type macvlan >/dev/null 2>&1 || return 1
-    touch "$DATA_DIR/$ifname"
+    echo "eth:$ETH" >>"$DATA_DIR/$ifname"
 }
 
 # Remove virtual interface
@@ -71,9 +65,11 @@ create_virtual_interface() {
 # e.g. remove_virtual_interface vth0
 remove_virtual_interface() {
     local ifname=$1
+    local eth
     ip link show "$ifname" >/dev/null 2>&1 || return
     [ -f "$DATA_DIR/$ifname" ] && rm -f "$DATA_DIR/$ifname" 2>/dev/null
-    if ip link show "$ifname" | grep "$ifname@$ETH" >/dev/null; then
+    eth=$(grep "^eth:" <"$DATA_DIR/$ifname" | sed 's/^eth://')
+    if ip link show "$ifname" | grep "$ifname@$eth" >/dev/null; then
         ip link set "$ifname" down
         ip link del "$ifname"
     fi
@@ -186,11 +182,11 @@ configure_routing_table() {
     local gateway4
     local gateway6
     local table_id
-    ifname2=$(grep 'ifname' <"$DATA_DIR/$ifname" | sed 's/^ifname://')
-    ipv4=$(grep 'ipv4' <"$DATA_DIR/$ifname" | sed 's/^ipv4://')
-    ipv6=$(grep 'ipv6' <"$DATA_DIR/$ifname" | sed 's/^ipv6://')
-    gateway4=$(grep 'gateway4' <"$DATA_DIR/$ifname" | sed 's/^gateway4://')
-    gateway6=$(grep 'gateway6' <"$DATA_DIR/$ifname" | sed 's/^gateway6://')
+    ifname2=$(grep "^ifname:" <"$DATA_DIR/$ifname" | sed 's/^ifname://')
+    ipv4=$(grep "^ipv4:" <"$DATA_DIR/$ifname" | sed 's/^ipv4://')
+    ipv6=$(grep "^ipv6:" <"$DATA_DIR/$ifname" | sed 's/^ipv6://')
+    gateway4=$(grep "^gateway4:" <"$DATA_DIR/$ifname" | sed 's/^gateway4://')
+    gateway6=$(grep "^gateway6:" <"$DATA_DIR/$ifname" | sed 's/^gateway6://')
     table_id=$(get_empty_routing_table)
     echo "table_id:${table_id}" >>"$DATA_DIR/$ifname"
     if [ -n "$ipv4" ]; then
@@ -209,7 +205,7 @@ configure_routing_table() {
 remove_routing_table() {
     local ifname=$1
     local table_id
-    table_id=$(grep 'table_id' <"$DATA_DIR/$ifname" | sed 's/^table_id://')
+    table_id=$(grep "^table_id:" <"$DATA_DIR/$ifname" | sed 's/^table_id://')
     if [ -n "$table_id" ]; then
         ip -4 route del default table "$table_id" >/dev/null 2>&1
         ip -6 route del default table "$table_id" >/dev/null 2>&1
@@ -267,7 +263,7 @@ dhcp_dial() {
     local ifname=$1
     local ipv4
     local gateway
-    dhclient -nw "$ifname" 2>/dev/null
+    dhclient -nw "$ifname" || exit 1
     local TIME=0
     printf "Trying to create connection for %s " "$ifname"
     while true; do
@@ -356,7 +352,7 @@ dial_helper() {
     local ifname2
     local ipv4
     local ipv6
-    ifname2=$(grep ifname <"$DATA_DIR/$ifname" | sed 's/^ifname://')
+    ifname2=$(grep "^ifname:" <"$DATA_DIR/$ifname" | sed 's/^ifname://')
     [ "$enable_ipv6" = '1' ] && build_isatap_tunnel "$ifname2"
     ipv4=$(get_ip "$ifname2" --ipv4)
     ipv6=$(get_ip isa-"$ifname2" --ipv6)
@@ -401,64 +397,34 @@ get_next_address() {
     echo "$_cur_address"
 }
 
-bulk_dial() {
-    local optname
+# Create connections in batches
+# Args: [method] [number] [--ipv6]
+# e.g. bulk_dial pppoe 10 --ipv6
+batch_dial() {
+    local method=$1
+    local number=$2
+    local enable_ipv6=$3
     local vth_id
-    local ifname
-    local gateway
-    local pppoe_num=0
-    local dhcp_num=0
-    local static_num=0
-    local enable_ipv6=''
-    while getopts ":p:d:s:6" optname; do
-        case "$optname" in
-        "p")
-            pppoe_num=$OPTARG
-            ;;
-        "d")
-            dhcp_num=$OPTARG
-            ;;
-        "s")
-            static_num=$OPTARG
-            ;;
-        "6")
-            enable_ipv6='--ipv6'
-            ;;
-        "?")
-            echo "Unknown option $OPTARG" >&2
-            exit 1
-            ;;
-        ":")
-            echo "No argument value for option $OPTARG" >&2
-            exit 1
-            ;;
-        "*")
-            # Should not occur
-            echo "Unknown error while processing options" >&2
-            exit 1
-            ;;
-        esac
-    done
-    #pppoe dial
-    while [ "$pppoe_num" -gt 0 ]; do
-        vth_id=$(get_next_vth_id)
-        dial_helper "pppoe" "${VTH}${vth_id}" "$enable_ipv6"
-        pppoe_num=$((pppoe_num - 1))
-    done
-    # dhcp dial
-    while [ "$dhcp_num" -gt 0 ]; do
-        vth_id=$(get_next_vth_id)
-        dial_helper "dhcp" "${VTH}${vth_id}" "$enable_ipv6"
-        dhcp_num=$((dhcp_num - 1))
-    done
-    # static dial
-    while [ "$static_num" -gt 0 ]; do
-        vth_id=$(get_next_vth_id)
-        ipv4=$(get_next_address)
-        netmask="$NETMASK"
-        dial_helper "static" "${VTH}${vth_id}" "$ipv4" "$netmask" "$enable_ipv6"
-        static_num=$((static_num - 1))
-    done
+    local ipv4
+    local netmask
+    case "$method" in
+    "pppoe" | "dhcp")
+        while [ "$number" -gt 0 ]; do
+            vth_id=$(get_next_vth_id)
+            dial_helper "$method" "${VTH}${vth_id}" "$enable_ipv6"
+            number=$((number - 1))
+        done
+        ;;
+    "static")
+        while [ "$number" -gt 0 ]; do
+            vth_id=$(get_next_vth_id)
+            ipv4=$(get_next_address)
+            netmask="$NETMASK"
+            dial_helper "$method" "${VTH}${vth_id}" "$ipv4" "$netmask" "$enable_ipv6"
+            number=$((number - 1))
+        done
+        ;;
+    esac
 }
 
 # Clean all dial associated with the interface
@@ -481,7 +447,10 @@ dial_clean_all() {
     remove_virtual_interface "$ifname"
 }
 
-bulk_dial_clean() {
+# Clean all connections in batches
+# Args: none
+# e.g. batch_dial_clean
+batch_dial_clean() {
     for i in $DATA_DIR/*; do
         [ -f "$i" ] || break
         dial_clean_all "$(basename "$i")" >/dev/null 2>&1
@@ -491,24 +460,113 @@ bulk_dial_clean() {
     done
 }
 
+usage() {
+    echo "Usage: multidial [OPTION]"
+    echo "This shell script provide help to dial multiple internet connection over a single interface."
+    echo "OPTIONS:"
+    echo "    -p <n>               Make n distinct pppoe dial connections"
+    echo "    -d <n>               Make n distinct dhcp dial connections"
+    echo "    -s <n>               Make n distinct static dial connections"
+    echo "    -6                   Enable ipv6, get ipv6 addresses through isatap tunnel"
+    echo "    -i <interface>       Specify a real interface, default: eth0"
+    echo "    -r <interface>       Remove all connections over this interface"
+    echo "    -c                   Remove all connections over all virtual interfaces"
+    echo "    -h                   Print this message."
+}
+
 main() {
+    local optname
+    local pppoe_num
+    local dhcp_num
+    local static_num
+    local enable_ipv6
+    local clean_args
+    # make sure the data dir exists
     [ ! -d "$DATA_DIR" ] && mkdir -p "$DATA_DIR"
-    case "$1" in
-    -i)
-        ifname=$2
-        dial_helper "pppoe" "$ifname"
-        ;;
-    -r)
-        ifname=$2
-        dial_clean_all "$ifname"
-        ;;
-    -c)
-        bulk_dial_clean
-        ;;
-    *)
-        bulk_dial "$@"
-        ;;
-    esac
+    while getopts ":p:d:s:6i:r:ch" optname; do
+        case "$optname" in
+        "p")
+            pppoe_num="$OPTARG"
+            if ! [ "$pppoe_num" -le 100 ] 2>/dev/null; then
+                error "Connection num should be in [0-100]"
+                exit 1
+            fi
+            ;;
+        "d")
+            dhcp_num="$OPTARG"
+            if ! [ "$dhcp_num" -le 100 ] 2>/dev/null; then
+                error "Connection num should be in [0-100]"
+                exit 1
+            fi
+            ;;
+        "s")
+            static_num="$OPTARG"
+            if ! [ "$static_num" -le 100 ] 2>/dev/null; then
+                error "Connection num should be in [0-100]"
+                exit 1
+            fi
+            ;;
+        "6")
+            enable_ipv6='--ipv6'
+            ;;
+        "i")
+            ETH="$OPTARG"
+            ;;
+
+        "r")
+            clean_args="$OPTARG"
+            ;;
+        "c")
+            clean_args="all"
+            ;;
+        "h")
+            usage
+            exit 0
+            ;;
+        "?")
+            error "Unknown option $OPTARG"
+            exit 1
+            ;;
+        ":")
+            error "No argument value for option $OPTARG"
+            exit 1
+            ;;
+        "*")
+            # Should not occur
+            echo "Unknown error while processing options" >&2
+            exit 1
+            ;;
+        esac
+    done
+    if ! ip link show "$ETH" >/dev/null 2>&1; then
+        error "Interface ${ETH} does not exist, you must specify a existed interface"
+        exit 1
+    fi
+    if [ -z "${pppoe_num}${dhcp_num}${static_num}${enable_ipv6}${clean_args}" ]; then
+        if [ -n "$*" ]; then
+            error "invalid arguments: $*"
+        else
+            usage >&2
+        fi
+        exit 1
+    fi
+    # Must be root
+    if [ "$(/usr/bin/id -u)" != 0 ]; then
+        error "You must be root to run this script"
+        exit 1
+    fi
+    if [ -n "$clean_args" ]; then
+        if [ "$clean_args" = "all" ]; then
+            batch_dial_clean
+            exit 0
+        else
+            dial_clean_all "$clean_args" || exit 1
+            exit 0
+        fi
+    fi
+    [ -n "$pppoe_num" ] && batch_dial "pppoe" "$pppoe_num" "$enable_ipv6"
+    [ -n "$dhcp_num" ] && batch_dial "dhcp" "$dhcp_num" "$enable_ipv6"
+    [ -n "$static_num" ] && batch_dial "static" "$static_num" "$enable_ipv6"
 }
 
 main "$@"
