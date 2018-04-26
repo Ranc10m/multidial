@@ -481,7 +481,7 @@ usage() {
     echo "    -r <interface>       Remove all connections over this interface"
     echo "    -c                   Remove all connections over all virtual interfaces"
     echo "    -l                   List all ipv4 and ipv6 addresses"
-    echo "    -h                   Print this message."
+    echo "    -h                   Print this message"
 }
 
 main() {
