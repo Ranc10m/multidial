@@ -68,8 +68,8 @@ remove_virtual_interface() {
     local ifname=$1
     local eth
     ip link show "$ifname" >/dev/null 2>&1 || return
-    [ -f "$DATA_DIR/$ifname" ] && rm -f "$DATA_DIR/$ifname" 2>/dev/null
     eth=$(grep "^eth:" <"$DATA_DIR/$ifname" | sed 's/^eth://')
+    [ -f "$DATA_DIR/$ifname" ] && rm -f "$DATA_DIR/$ifname" 2>/dev/null
     if ip link show "$ifname" | grep "$ifname@$eth" >/dev/null; then
         ip link set "$ifname" down
         ip link del "$ifname"
