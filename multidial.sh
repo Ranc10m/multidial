@@ -400,7 +400,7 @@ get_next_address() {
 
 # Create connections in batches
 # Args: [method] [number] [--ipv6]
-# e.g. bulk_dial pppoe 10 --ipv6
+# e.g. batch_dial pppoe 10 --ipv6
 batch_dial() {
     local method=$1
     local number=$2
@@ -452,7 +452,7 @@ dial_clean_all() {
 # Args: none
 # e.g. batch_dial_clean
 batch_dial_clean() {
-    for i in $DATA_DIR/*; do
+    for i in "$DATA_DIR"/*; do
         [ -f "$i" ] || break
         dial_clean_all "$(basename "$i")" >/dev/null 2>&1
     done
@@ -584,6 +584,7 @@ main() {
     [ -n "$pppoe_num" ] && batch_dial "pppoe" "$pppoe_num" "$enable_ipv6"
     [ -n "$dhcp_num" ] && batch_dial "dhcp" "$dhcp_num" "$enable_ipv6"
     [ -n "$static_num" ] && batch_dial "static" "$static_num" "$enable_ipv6"
+    exit 0
 }
 
 main "$@"
