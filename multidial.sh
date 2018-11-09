@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright (c) 2018 Ranc10m <xiayjchn@gmail.com>
+# Copyright (c) 2018 Yujie Xia <xiayjchn@gmail.com>
 #
 # This is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
